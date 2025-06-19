@@ -7,41 +7,43 @@ import scanImaging.instrument
 @pytest.mark.GUI
 def test_VirtualScanner_2():
 
-    from viscope.instrument.virtual.virtualADetector import VirtualADetector
-    from viscope.instrument.aDetectorProcessor import ADetectorProcessor
+    from scanImaging.instrument.scannerProcessor import ScannerProcessor
+    from scanImaging.instrument.virtual.virtualScanner import VirtualScanner
     from viscope.main import viscope
     from viscope.gui.aDetectorGUI import ADetectorGUI
-    from viscope.gui.aDetectorViewGUI import ADetectorViewGUI
+    from viscope.gui.cameraViewGUI import CameraViewGUI
 
-    aDet = VirtualADetector(name='ADetector')
-    aDet.connect()
-    aDet.setParameter('threadingNow',True)
 
-    aDProc = ADetectorProcessor(name='ADetectorProcessor')
-    aDProc.connect(aDetector=aDet)
-    aDProc.setParameter('threadingNow',True)
+    scanner = VirtualScanner()
+    scanner.connect()
+    scanner.setParameter('threadingNow',True)
+    scanner.startAcquisition()
+
+    sProc = ScannerProcessor(name='ScannerProcessor')
+    sProc.connect(scanner=scanner)
+    sProc.setParameter('threadingNow',True)
 
     adGui  = ADetectorGUI(viscope)
-    adGui.setDevice(aDet)
+    adGui.setDevice(scanner)
 
-    advGui  = ADetectorViewGUI(viscope)
-    advGui.setDevice(aDProc)
+    cvGui  = CameraViewGUI(viscope)
+    cvGui.setDevice(sProc)
 
     viscope.run()
 
-    aDet.disconnect()
-    aDProc.disconnect()
+    sProc.disconnect()
+    scanner.disconnect()
 
 
 def test_VirtualScanner():
     ''' check if the data are obtained'''
-    import scanImaging
+    #import scanImaging
 
-    #from scanImaging.instrument.virtual.virtualScanner import VirtualScanner
+    from scanImaging.instrument.virtual.virtualScanner import VirtualScanner
     import time
     import numpy as np
 
-    scanner = scanImaging.instrument.virtual.virtualScanner.VirtualScanner()
+    scanner = VirtualScanner()
     scanner.connect()
     scanner.setParameter('threadingNow',True)
     scanner.startAcquisition()

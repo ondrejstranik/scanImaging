@@ -5,6 +5,7 @@ import numpy as np
 import time
 
 from viscope.instrument.base.baseADetector import BaseADetector
+from viscope.virtualSystem.component.sample import Sample
 
 
 class VirtualScanner(BaseADetector):
@@ -15,7 +16,7 @@ class VirtualScanner(BaseADetector):
     '''
 
     DEFAULT = {'name':'virtualScanner',
-               'signalRate': 1e3, # Hz
+               'signalRate': 5e4, # Hz
                'imageSize' : np.array([512,512])} 
 
     def __init__(self, name=DEFAULT['name'], **kwargs):
@@ -24,15 +25,30 @@ class VirtualScanner(BaseADetector):
         
         # variable to generate virtual data
         self.signalRate = self.DEFAULT['signalRate']
+        self.scanPosition = 0 # current position of the scanner in linear dimension
+
         self.acquiring = False
         if self.acquiring is False:
             self.acquisitionStopTime = 0
             self.lastStackTime = 0
 
+        # setting the virtual probe
         self.imageSize = self.DEFAULT['imageSize']
-        self.scanPosition = 0 # current position of the scanner in linear dimension
+        
+        #Probes
+        '''
+        # 1. constant
         self.virtualProbe = np.zeros(self.imageSize) +100 #  setup the probe
+        '''
+        # 2. astronaut
+        _Sample = Sample()
+        _Sample.setAstronaut(sampleSize=self.imageSize,photonRateMax=10)
+        self.virtualProbe = _Sample.get()
+
+        # linearise the probe
         self.virtualProbe = self.virtualProbe.reshape(-1)
+        
+        # set the x and y indexes
         grid = np.indices(self.imageSize)
         self.xIdx = grid[0].reshape(-1)
         self.yIdx = grid[1].reshape(-1)
@@ -71,7 +87,6 @@ class VirtualScanner(BaseADetector):
                 _virtualYIdx = np.array([])
                 # add rest of the image if scanner rolls over the end of the image
                 while newScanPosition> np.prod(self.imageSize):
-                    print('new image')
                     _virtualPhoton = np.append(_virtualPhoton,self.virtualProbe[self.scanPosition:-1])
                     _virtualXIdx = np.append(_virtualXIdx,self.xIdx[self.scanPosition:-1])
                     _virtualYIdx = np.append(_virtualYIdx,self.yIdx[self.scanPosition:-1])

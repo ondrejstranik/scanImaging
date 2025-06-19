@@ -28,7 +28,7 @@ class ScannerProcessor(BaseProcessor):
         self.scanner = None
         
         # data
-        self.image = None
+        self.rawImage = None
 
     def connect(self,scanner=None):
         ''' connect data processor with aDetector'''
@@ -42,7 +42,7 @@ class ScannerProcessor(BaseProcessor):
         if name== 'scanner':
             self.scanner = value
             self.flagToProcess = self.scanner.flagLoop
-            self.image = np.zeros(self.scanner.imageSize)
+            self.rawImage = np.zeros(self.scanner.imageSize)
 
     def getParameter(self,name):
         ''' get parameter of the camera '''
@@ -58,9 +58,17 @@ class ScannerProcessor(BaseProcessor):
         #print(f"processing data from {self.DEFAULT['name']}")
         
         try:
-            self.image(self.scanner.stack[:,1],self.scanner.stack[:,0]) = (
-                self.image(self.scanner.stack[:,1],self.scanner.stack[:,0]) + 
+            #print(f'scanner stack \n {self.scanner.stack}')
+            # adding the values
+            #self.rawImage[(self.scanner.stack[:,1].astype(int),self.scanner.stack[:,0].astype(int))] = (
+            #    self.rawImage[(self.scanner.stack[:,1].astype(int),self.scanner.stack[:,0].astype(int))] + 
+            #    self.scanner.stack[:,2]) 
+
+            self.rawImage[(self.scanner.stack[:,0].astype(int),
+                           self.scanner.stack[:,1].astype(int))] = (
                 self.scanner.stack[:,2]) 
+
+
         except:
             print(f'from {self.DEFAULT["name"]}: can not process the data')
             #print(f'stack {self.aDetector.stack}')
