@@ -16,7 +16,7 @@ class VirtualScanner(BaseADetector):
     '''
 
     DEFAULT = {'name':'virtualScanner',
-               'signalRate': 5e4, # Hz
+               'signalRate': 1e5, # Hz
                'imageSize' : np.array([512,512])} 
 
     def __init__(self, name=DEFAULT['name'], **kwargs):

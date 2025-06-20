@@ -60,13 +60,13 @@ class ScannerProcessor(BaseProcessor):
         try:
             #print(f'scanner stack \n {self.scanner.stack}')
             # adding the values
-            #self.rawImage[(self.scanner.stack[:,1].astype(int),self.scanner.stack[:,0].astype(int))] = (
-            #    self.rawImage[(self.scanner.stack[:,1].astype(int),self.scanner.stack[:,0].astype(int))] + 
-            #    self.scanner.stack[:,2]) 
-
-            self.rawImage[(self.scanner.stack[:,0].astype(int),
-                           self.scanner.stack[:,1].astype(int))] = (
+            self.rawImage[(self.scanner.stack[:,1].astype(int),self.scanner.stack[:,0].astype(int))] = (
+                self.rawImage[(self.scanner.stack[:,1].astype(int),self.scanner.stack[:,0].astype(int))] + 
                 self.scanner.stack[:,2]) 
+
+            #self.rawImage[(self.scanner.stack[:,0].astype(int),
+            #               self.scanner.stack[:,1].astype(int))] = (
+            #    self.scanner.stack[:,2]) 
 
 
         except:
