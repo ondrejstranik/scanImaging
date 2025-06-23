@@ -29,12 +29,12 @@ class VirtualBHScanner(BaseADetector):
     '''
 
     DEFAULT = {'name':'virtualBHScanner',
-               'pixelTime': 1e-6, # in [s]
-               'pixelToSignalTime': 10, # pixelToSignalTime has to be integer
-               'macroToPixelTime': 100,
+               'pixelTime': 1e-6, # in [s] time per Pixel
+               'maxPhotonPerPixel': 10, # maximal number of event per pixel
+               'macroTimeIncrement': 1e-8, # in [s] time to increase the macrotime counter per one
                'imageSize' : np.array([512,512]),
-               'scanOffSet' : np.array([5,10]) # add Pixel and lines
-                #to simulate return of the scanner (#lines,#horizontal pixel)
+               'scanOffSet' : np.array([5,10]) # add (horizontal,vertical) lines
+                # simulate returning path of the scanner 
                } 
 
     def __init__(self, name=DEFAULT['name'], **kwargs):
@@ -42,9 +42,10 @@ class VirtualBHScanner(BaseADetector):
         super().__init__(name=name, **kwargs)
         
         # variable to generate virtual data
-        self.pixelTime = self.DEFAULT['pixelTime']
-        self.signalTime = self.pixelTime/self.DEFAULT['pixelToSignalTime']
-        self.macroTime = self.pixelTime*self.DEFAULT['macroToPixelTime']
+        self.pixelTime = self.DEFAULT['pixelTime'] # dwell time on one pixel
+        self.signalTime = self.pixelTime/self.DEFAULT['maxPhotonPerPixel'] # smallest time between photons
+        self.macroTimeIncrement = self.DEFAULT['macroTimeIncrement']
+        self.macroTimeTotal = 0 # start counting with start of the measurement, in [self.signalTime units]
         self.scanPosition = 0 # current position of the scanner in linear dimension
 
         self.acquiring = False
@@ -54,26 +55,32 @@ class VirtualBHScanner(BaseADetector):
 
         # setting the virtual probe
         self.imageSize = self.DEFAULT['imageSize']
-        self.scanSize = self.imageSize + self.DEFAULT['imageSize']
+        # scan size take into acount the return of scanner and double it
+        # the doubling assure the roll over the new image 
+        #self.scanSize = (self.imageSize + self.DEFAULT['imageSize'])*([2,1])
+        self.scanSize = (self.imageSize + self.DEFAULT['imageSize'])
 
-        # maximal position of the scan in subpixels 
-        self.maxScanPosition = int(np.prod(self.scanSize)*(self.DEFAULT['pixelToSamplingTime']))
+        # maximal position of the scan (for one sample) in subpixels 
+        self.maxScanPosition = int(np.prod(self.scanSize)*(self.DEFAULT['maxPhotonPerPixel']))
 
         #Probes
         # 1. constant with a thick line
         _virtualProbe = np.zeros(self.imageSize) +100
         _virtualProbe[:, int(self.imageSize[0]*0.4):int(self.imageSize[0]*0.6)] = 200 
 
-        #  add scan simulation edges
+        #  add scan simulation return of the scan 
         self.virtualProbe = np.zeros(self.scanSize)
         self.virtualProbe[0:self.imageSize[0],0:self.imageSize[1]]= _virtualProbe
+        # double the virtual probe. it overcome the indexing issue with scan rolling over 
+        self.virtualProbe = np.hstack((self.virtualProbe,self.virtualProbe))
 
-        # linearise the probe
+        # linearize the probe
         self.virtualProbe = self.virtualProbe.reshape(-1)
         
     def startAcquisition(self):
         '''start detector collecting data in a stack '''
         super().startAcquisition()
+        self.macroTimeTotal = 0 # start recording the total time
         self.lastStackTime = time.time_ns() #self.acquisitionStartTime*1
         self.acquisitionStopTime = None        
         # set arbitrary start position of scanning
@@ -100,29 +107,33 @@ class VirtualBHScanner(BaseADetector):
                 nSubPixel = int((currentTime - self.lastStackTime)*1e-9/self.signalTime)
                 newScanPosition = self.scanPosition + nSubPixel
 
-                _virtualPhoton = np.array([])
-                _virtualXIdx = np.array([])
-                _virtualYIdx = np.array([])
-                
-                # TODO: implement the roll over
-                if newScanPosition > self.maxScanPosition:
-                    print('scan roll over: not implemented yet')
-                    print('setting newScanPosition = self.maxScanPosition')
-                    newScanPosition = self.maxScanPosition
- 
-                # TODO: not finised, continue
+                # photon events generation
                 # generate the photons ... 1= photon was generated                
                 scanRange = np.arange(self.scanPosition, newScanPosition)
                 pixelIdx = int(scanRange//int(self.pixelTime/self.signalTime))
                 threshold = 0.5
+                # this probability calculation already contain the the poisson noise
                 _virtualPhoton = (self.virtualProbe[pixelIdx]*np.random.rand(len(pixelIdx))>threshold)*1
 
+                # macro time + macroTimeFlag generation
+                tMacro = self.macroTimeTotal + np.arange(nSubPixel)*self.signalTime/self.macroTimeIncrement
+                tMacroSaw = tMacro%2**12
+                tMacroFlag = (tMacroSaw[1:-2] - tMacroSaw[0:-1])<0
+                # update macroTimeTotal
+                self.macroTimeTotal = tMacro[-1]
 
+                # new line flag generation
+                newLineFlag = scanRange%self.scanSize[1]==0
 
-                self.scanPosition = newScanPosition
+                # update the position, correct for roll over
+                if newScanPosition > self.maxScanPosition:
+                    self.scanPosition = newScanPosition%self.maxScanPosition
+                else:              
+                    self.scanPosition = newScanPosition
 
                 # generate the signal
-                virtualStack = np.vstack([_virtualXIdx,_virtualYIdx,np.random.poisson(_virtualPhoton)]).T
+                # TODO: remove the events without photons (but keep the flags)
+                virtualStack = np.vstack([tMacroFlag,newLineFlag,_virtualPhoton]).T
 
 
             self.lastStackTime = currentTime
