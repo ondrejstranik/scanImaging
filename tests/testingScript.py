@@ -3,7 +3,7 @@
 from scanImaging.instrument.virtual.virtualScannerBH import VirtualBHScanner
 from scanImaging.instrument.scannerProcessorBH import ScannerProcessorBH
 import numpy as np
-#import napari
+import napari
 import time
 import matplotlib.pyplot as plt
 
@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 bhScanner = VirtualBHScanner()
 
 bhScanner.startAcquisition()
-time.sleep(0.01)
+time.sleep(0.3)
 
 myStack = bhScanner.getStack()
 bhScanner.stopAcquisition()
@@ -47,7 +47,7 @@ ax.imshow(bhPro.rawImage)
 
 
 
-'''
+
 fig, ax = plt.subplots()
 ax.plot(bhPro.macroTime,color = 'g', label = 'macro time')
 ax.plot(bhPro.xIdx,color = 'r', label = 'x')
@@ -55,4 +55,9 @@ ax.plot(bhPro.yIdx,color = 'b', label = 'y')
 ax.legend()
 
 plt.show()
+'''
 # %%
+
+viewer = napari.Viewer()
+viewer.add_image(bhPro.rawImage)
+napari.run()

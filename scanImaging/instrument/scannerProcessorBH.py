@@ -16,7 +16,7 @@ from viscope.instrument.base.baseProcessor import BaseProcessor
 class ScannerProcessorBH(BaseProcessor):
     ''' class to collect data from virtual scanner'''
     DEFAULT = {'name': 'ScannerProcessor',
-                'pixelTime': 1e-6, # in [s], time per Pixel
+                'pixelTime': 3e2, # 
                 'newPageTimeFlag': 3 # threshold for new page in the macroTime 
                 }
 
@@ -68,6 +68,20 @@ class ScannerProcessorBH(BaseProcessor):
         if name== 'scanner':
             return self.aDetector
 
+    def _resetFunction(self,flagX,y):
+        ''' function returning y with values reset to zero at flagX (bool) points'''
+        y0= y[flagX]
+        # no reset point
+        if len(y0) == 0: return y
+        dy0 = np.empty_like(y0)
+        dy0[0] =y0[0]
+        # more then one reset point
+        if len(y0)>1: dy0[1:] = y0[1:]-y0[:-1]
+        sy0 = np.zeros_like(y)
+        sy0[flagX]= dy0
+        bcg = np.cumsum(sy0)
+        return y-bcg
+
     def processData(self):
         ''' process newly arrived data '''
 
@@ -87,19 +101,18 @@ class ScannerProcessorBH(BaseProcessor):
 
         # TODO: it is wrong! Correct it!
         # reset macroTime on each new line
-        lineResetTimeIncrement = self.macroTime*self.scanner.stack[:,0]
-        lineResetTime = np.cumsum(lineResetTimeIncrement)
-        self.macroTime = self.macroTime - lineResetTime
+        #print(f'self.scanner.stack[:,1] {self.scanner.stack[:,1].astype(bool)}')
+        self.macroTime = self._resetFunction(self.scanner.stack[:,1].astype(bool),self.macroTime)
 
         print(f'processor macroTime new line {self.macroTime}')
 
         # calculate x position
-        self.xIdx = (self.macroTime%self.pixelTime).astype(int)
+        self.xIdx = (self.macroTime//self.pixelTime).astype(int)
 
         print(f'xIdx {self.xIdx}')
 
         # calculate y position
-        self.yIdx = self.lastYIdx + np.cumsum(self.scanner.stack[:,0]).astype(int)
+        self.yIdx = self.lastYIdx + np.cumsum(self.scanner.stack[:,1]).astype(int)
 
         print(f'yIdx {self.yIdx}')
 
@@ -114,7 +127,7 @@ class ScannerProcessorBH(BaseProcessor):
 
         
         # add the photons to the image
-        self.rawImage = np.add.at(self.rawImage,(self.yIdx,self.xIdx),1)
+        np.add.at(self.rawImage,(self.yIdx,self.xIdx),1)
 
 
 
