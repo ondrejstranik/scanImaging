@@ -29,7 +29,7 @@ class VirtualBHScanner(BaseADetector):
     '''
 
     DEFAULT = {'name':'virtualBHScanner',
-               'pixelTime': 1e-6, # in [s] time per Pixel
+               'pixelTime': 1e-6, # in [s], time per Pixel
                'maxPhotonPerPixel': 10, # maximal number of event per pixel
                'macroTimeIncrement': 1e-8, # in [s] time to increase the macrotime counter per one
                'imageSize' : np.array([512,512]),
@@ -40,7 +40,10 @@ class VirtualBHScanner(BaseADetector):
     def __init__(self, name=DEFAULT['name'], **kwargs):
         ''' detector initialization'''
         super().__init__(name=name, **kwargs)
-        
+
+        # probe, which it will scan over. 
+        self.virtualProbe = None
+
         # variable to generate virtual data
         self.pixelTime = self.DEFAULT['pixelTime'] # dwell time on one pixel
         self.signalTime = self.pixelTime/self.DEFAULT['maxPhotonPerPixel'] # smallest time between photons
@@ -58,24 +61,25 @@ class VirtualBHScanner(BaseADetector):
         # scan size take into acount the return of scanner and double it
         # the doubling assure the roll over the new image 
         #self.scanSize = (self.imageSize + self.DEFAULT['imageSize'])*([2,1])
-        self.scanSize = (self.imageSize + self.DEFAULT['imageSize'])
+        self.scanSize = (self.imageSize + self.DEFAULT['scanOffSet'])
 
         # maximal position of the scan (for one sample) in subpixels 
         self.maxScanPosition = int(np.prod(self.scanSize)*(self.DEFAULT['maxPhotonPerPixel']))
 
         #Probes
         # 1. constant with a thick line
-        _virtualProbe = np.zeros(self.imageSize) +100
-        _virtualProbe[:, int(self.imageSize[0]*0.4):int(self.imageSize[0]*0.6)] = 200 
+        self.virtualProbe = np.zeros(self.imageSize) +0
+        self.virtualProbe[:, int(self.imageSize[0]*0.4):int(self.imageSize[0]*0.6)] = 100
 
         #  add scan simulation return of the scan 
-        self.virtualProbe = np.zeros(self.scanSize)
-        self.virtualProbe[0:self.imageSize[0],0:self.imageSize[1]]= _virtualProbe
+        self.virtualProbeExtra = np.zeros(self.scanSize)
+        self.virtualProbeExtra[0:self.imageSize[0],0:self.imageSize[1]]= self.virtualProbe
+
         # double the virtual probe. it overcome the indexing issue with scan rolling over 
-        self.virtualProbe = np.hstack((self.virtualProbe,self.virtualProbe))
+        self.virtualProbeExtra = np.hstack((self.virtualProbeExtra,self.virtualProbeExtra))
 
         # linearize the probe
-        self.virtualProbe = self.virtualProbe.reshape(-1)
+        self.virtualProbeExtra = self.virtualProbeExtra.reshape(-1)
         
     def startAcquisition(self):
         '''start detector collecting data in a stack '''
@@ -94,55 +98,56 @@ class VirtualBHScanner(BaseADetector):
     def _calculateStack(self):
         ''' calculate the virtual stack '''
 
-        try:
-            currentTime = time.time_ns()
-            
-            if self.acquisitionStopTime is not None:
-                currentTime = self.acquisitionStopTime
-
-            if self.acquisitionStopTime == self.lastStackTime:
-                virtualStack = None
-            else:
-                # number of sub pixels to generate
-                nSubPixel = int((currentTime - self.lastStackTime)*1e-9/self.signalTime)
-                newScanPosition = self.scanPosition + nSubPixel
-
-                # photon events generation
-                # generate the photons ... 1= photon was generated                
-                scanRange = np.arange(self.scanPosition, newScanPosition)
-                pixelIdx = int(scanRange//int(self.pixelTime/self.signalTime))
-                threshold = 0.5
-                # this probability calculation already contain the the poisson noise
-                _virtualPhoton = (self.virtualProbe[pixelIdx]*np.random.rand(len(pixelIdx))>threshold)*1
-
-                # macro time + macroTimeFlag generation
-                tMacro = self.macroTimeTotal + np.arange(nSubPixel)*self.signalTime/self.macroTimeIncrement
-                tMacroSaw = tMacro%2**12
-                tMacroFlag = (tMacroSaw[1:-2] - tMacroSaw[0:-1])<0
-                # update macroTimeTotal
-                self.macroTimeTotal = tMacro[-1]
-
-                # new line flag generation
-                newLineFlag = scanRange%self.scanSize[1]==0
-
-                # update the position, correct for roll over
-                if newScanPosition > self.maxScanPosition:
-                    self.scanPosition = newScanPosition%self.maxScanPosition
-                else:              
-                    self.scanPosition = newScanPosition
-
-                # generate the signal
-                # TODO: remove the events without photons (but keep the flags)
-                virtualStack = np.vstack([tMacroFlag,newLineFlag,_virtualPhoton]).T
-
-
-            self.lastStackTime = currentTime
-            return virtualStack
+        currentTime = time.time_ns()
         
-        except Exception as error:
-            # handle the exception
-            print("An exception occurred:", error) # An exception occurred: division by zero            
+        if self.acquisitionStopTime is not None:
+            currentTime = self.acquisitionStopTime
 
+        if self.acquisitionStopTime == self.lastStackTime:
+            virtualStack = None
+        else:
+            # number of sub pixels to generate
+            nSubPixel = int((currentTime - self.lastStackTime)*1e-9/self.signalTime)
+            newScanPosition = self.scanPosition + nSubPixel
+
+            # photon events generation
+            # generate the photons ... 1= photon was generated                
+            scanRange = np.arange(self.scanPosition, newScanPosition)
+            pixelIdx = (scanRange//int(self.pixelTime/self.signalTime)).astype(int)
+            threshold = 0.5
+            # this probability calculation already contain the the poisson noise
+            _virtualPhoton = (self.virtualProbeExtra[pixelIdx]*np.random.rand(len(pixelIdx))>threshold)*1
+
+            # macro time + macroTimeFlag generation
+            print(f'time : {(currentTime - self.lastStackTime)}')
+            print(f'nSubPixel {nSubPixel}')
+            tMacro = self.macroTimeTotal + np.arange(nSubPixel+1)*self.signalTime/self.macroTimeIncrement
+            tMacroSaw = (tMacro%2**12)
+            tMacroFlag = (tMacroSaw[1:] - tMacroSaw[0:-1])<0
+            
+            # update macroTimeTotal
+            self.macroTimeTotal = tMacro[-1]
+            print(f'len(tMacroSaw): {len(tMacroSaw)}')
+            
+            # new line flag generation
+            newLineFlag = scanRange%(self.scanSize[1]*self.DEFAULT['maxPhotonPerPixel'])==0
+
+            # update the position, correct for roll over
+            if newScanPosition > self.maxScanPosition:
+                self.scanPosition = newScanPosition%self.maxScanPosition
+            else:              
+                self.scanPosition = newScanPosition
+
+            # generate the signal
+            # TODO: remove the events without photons (but keep the flags)
+            
+            
+            virtualStack = np.vstack([tMacroFlag,newLineFlag,tMacroSaw[1:],_virtualPhoton]).T
+
+
+        self.lastStackTime = currentTime
+        return virtualStack
+        
     def getStack(self):
         ''' get data from the stack'''        
         #print(f'getStack from {self.DEFAULT["name"]}')

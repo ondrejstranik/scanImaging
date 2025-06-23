@@ -58,3 +58,28 @@ def test_VirtualScanner():
     scanner.startAcquisition()
     scanner.disconnect()
     #%%
+
+
+def test_VirtualScannerBH():
+    ''' check the data are generated'''
+    from scanImaging.instrument.virtual.virtualScannerBH import VirtualBHScanner
+    import time
+    import matplotlib.pyplot as plt
+
+    bhScanner = VirtualBHScanner()
+    bhScanner.startAcquisition()
+    time.sleep(0.01)
+    myStack = bhScanner.getStack()
+    bhScanner.stopAcquisition()
+
+    fig, ax = plt.subplots()
+    ax.imshow(bhScanner.virtualProbe)
+
+    fig, ax = plt.subplots()
+    ax.plot(myStack[:,0],color = 'g', label = 'macro tag')
+    ax.plot(myStack[:,1],color = 'r', label = 'new line tag')
+    ax.plot(myStack[:,2],color = 'b', label = 'macro time')
+    ax.plot(myStack[:,3],color = 'y', label = 'photons')
+    ax.legend()
+
+    plt.show()
