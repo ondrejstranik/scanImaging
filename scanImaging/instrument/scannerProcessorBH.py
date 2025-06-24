@@ -16,7 +16,7 @@ from viscope.instrument.base.baseProcessor import BaseProcessor
 class ScannerProcessorBH(BaseProcessor):
     ''' class to collect data from virtual scanner'''
     DEFAULT = {'name': 'ScannerProcessor',
-                'pixelTime': 3e2, # 
+                'pixelTime': 1e2, # 
                 'newPageTimeFlag': 3 # threshold for new page in the macroTime 
                 }
 
@@ -92,6 +92,7 @@ class ScannerProcessorBH(BaseProcessor):
         MacroSawIncrement = np.empty_like(macroSaw)
         MacroSawIncrement[0]= macroSaw[0] - self.lastMacroSawValue
         MacroSawIncrement[1:] = macroSaw[1:]-macroSaw[:-1]
+        self.lastMacroSawValue = macroSaw[-1]
 
         # add the overflow of macrotime
         MacroSawIncrement =  MacroSawIncrement + self.scanner.stack[:,0]*2**12
@@ -99,10 +100,11 @@ class ScannerProcessorBH(BaseProcessor):
 
         print(f'processor macroTime {self.macroTime}')
 
-        # TODO: it is wrong! Correct it!
         # reset macroTime on each new line
-        #print(f'self.scanner.stack[:,1] {self.scanner.stack[:,1].astype(bool)}')
         self.macroTime = self._resetFunction(self.scanner.stack[:,1].astype(bool),self.macroTime)
+        self.lastMacroTime = self.macroTime[-1]
+
+
 
         print(f'processor macroTime new line {self.macroTime}')
 
@@ -110,22 +112,47 @@ class ScannerProcessorBH(BaseProcessor):
         self.xIdx = (self.macroTime//self.pixelTime).astype(int)
 
         print(f'xIdx {self.xIdx}')
+        # clip the x index if out of image x range
+        np.clip(self.xIdx,0,self.rawImage.shape[1]-1,out=self.xIdx)
 
         # calculate y position
         self.yIdx = self.lastYIdx + np.cumsum(self.scanner.stack[:,1]).astype(int)
-
-        print(f'yIdx {self.yIdx}')
+        self.lastYIdx = self.yIdx[-1]
 
 
         # calculate page position
+        '''               
         self.pageIdx = self.lastPageIdx + np.cumsum(self.macroTime> (self.pixelTime*self.rawImage.shape[1]*
                         self.DEFAULT['newPageTimeFlag'])).astype(int)
-        
+        #self.yIdx[self.pageIdx>self.lastPageIdx]-= self.rawImage.shape[0]
+        self.yIdx = self.yIdx - self.rawImage.shape[0]*(self.pageIdx-self.lastPageIdx)
+        self.lastPageIdx = self.pageIdx[-1]
+
+        '''
+        newPageIdx = np.argwhere(self.macroTime> (self.pixelTime*self.rawImage.shape[1]*
+                        self.DEFAULT['newPageTimeFlag']))
+        if len(newPageIdx)>0:
+            self.yIdx[newPageIdx[0]:] -= self.yIdx[newPageIdx[0]]
+
+
+        # TODO: make roll over algorithm
+        np.clip(self.yIdx,0,self.rawImage.shape[0]-1,out=self.yIdx)
+        print(f'yIdx {self.yIdx}')
+
+
+
+
+        #TODO: correct it
         # check if full image is recorded
         if np.any(self.pageIdx==1):
             self.flagFullImage = True
 
-        
+        # TODO: temporary : not in real data
+        # remove the empty photons
+        arrivedPhotons = self.scanner.stack[:,3]==1
+        self.yIdx = self.yIdx[arrivedPhotons]
+        self.xIdx = self.xIdx[arrivedPhotons]
+
         # add the photons to the image
         np.add.at(self.rawImage,(self.yIdx,self.xIdx),1)
 

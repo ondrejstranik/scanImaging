@@ -69,14 +69,14 @@ class VirtualBHScanner(BaseADetector):
         #Probes
         # 1. constant with a thick line
         self.virtualProbe = np.zeros(self.imageSize) +0
-        self.virtualProbe[:, int(self.imageSize[0]*0.4):int(self.imageSize[0]*0.6)] = 100
+        self.virtualProbe[:, int(self.imageSize[0]*0.4):int(self.imageSize[0]*0.6)] = 1
 
         #  add scan simulation return of the scan 
         self.virtualProbeExtra = np.zeros(self.scanSize)
         self.virtualProbeExtra[0:self.imageSize[0],0:self.imageSize[1]]= self.virtualProbe
 
         # double the virtual probe. it overcome the indexing issue with scan rolling over 
-        self.virtualProbeExtra = np.hstack((self.virtualProbeExtra,self.virtualProbeExtra))
+        self.virtualProbeExtra = np.vstack((self.virtualProbeExtra,self.virtualProbeExtra))
 
         # linearize the probe
         self.virtualProbeExtra = self.virtualProbeExtra.reshape(-1)
@@ -88,7 +88,8 @@ class VirtualBHScanner(BaseADetector):
         self.lastStackTime = time.time_ns() #self.acquisitionStartTime*1
         self.acquisitionStopTime = None        
         # set arbitrary start position of scanning
-        self.scanPosition = np.random.randint(int(self.maxScanPosition)) 
+        # TODO: switched off for debugging
+        #self.scanPosition = np.random.randint(int(self.maxScanPosition)) 
 
     def stopAcquisition(self):
         '''stop detector collecting data in a stack '''
@@ -131,6 +132,13 @@ class VirtualBHScanner(BaseADetector):
             
             # new line flag generation
             newLineFlag = scanRange%(self.scanSize[1]*self.DEFAULT['maxPhotonPerPixel'])==0
+            # remove new line flag from rows below sample
+            # this rows imitates return of the beam
+            outerRows = np.logical_and(scanRange>np.prod(self.scanSize-self.DEFAULT['scanOffSet']*[1,0])*self.DEFAULT['maxPhotonPerPixel'],
+                                        scanRange< self.maxScanPosition)
+            #outerRows = scanRange< self.maxScanPosition
+            print(f'outerRows: {outerRows}')
+            newLineFlag[outerRows]= False
 
             # update the position, correct for roll over
             if newScanPosition > self.maxScanPosition:
