@@ -18,14 +18,15 @@ bhPro.connect(scanner=bhScanner)
 bhPro.setParameter('threadingNow', True)
 
 adGui  = ADetectorGUI(viscope)
-adGui.setDevice(bhScanner)
+adGui.setDevice(bhScanner,processor=bhPro)
 
 cvGui  = CameraViewGUI(viscope)
 cvGui.setDevice(bhPro)
 
-bhScanner.startAcquisition()
+#bhScanner.startAcquisition()
 viscope.run()
 
+bhScanner.stopAcquisition()
 bhPro.disconnect()
 bhScanner.disconnect()
 

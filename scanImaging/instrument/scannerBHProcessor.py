@@ -11,7 +11,7 @@ import os
 import time
 import numpy as np
 from viscope.instrument.base.baseProcessor import BaseProcessor
-from scanImaging.algorithm.signalProcessFunction import resetSignal, upperEdgeToCounter
+from scanImaging.algorithm.signalProcessFunction import resetSignal, flagToCounter, upperEdgeSignalToFlag
 
 
 class ScannerBHProcessor(BaseProcessor):
@@ -46,6 +46,19 @@ class ScannerBHProcessor(BaseProcessor):
         self.flagFullImage = False # indicate, when whole image is recorded
 
 
+    def resetCounter(self):
+        ''' reset value of all counting, indxing parameter. it is called when new scan start'''
+
+        self.rawImage = 0*self.rawImage
+        self.xIdx = 0 # quick axis
+        self.yIdx = 0 # slow axis
+        self.lastYIdx = -1 # at the start of scanning the y-flag is given
+        self.pageIdx = 0
+        self.lastPageIdx = 0
+        self.macroTime = 0
+        self.lastMacroSawValue = 0
+        self.lastMacroTime = 0
+        self.flagFullImage = False # indicate, when whole image is recorded
 
     def connect(self,scanner=None):
         ''' connect data processor with aDetector'''
@@ -89,7 +102,7 @@ class ScannerBHProcessor(BaseProcessor):
         self.xIdx = (self.macroTime//self.pixelTime).astype(int)
 
         # clip the x index if out of image x range
-        np.clip(self.xIdx,0,self.rawImage.shape[1]-1,out=self.xIdx)
+        #np.clip(self.xIdx,0,self.rawImage.shape[1]-1,out=self.xIdx)
 
         # calculate y position
         self.yIdx = self.lastYIdx + np.cumsum(self.scanner.stack[:,1]).astype(int)
@@ -97,26 +110,35 @@ class ScannerBHProcessor(BaseProcessor):
         # calculate page position
         returnSignal = (self.macroTime > 
                         self.pixelTime*self.rawImage.shape[1]*self.DEFAULT['newPageTimeFlag'])
+        newPageFlag = upperEdgeSignalToFlag(returnSignal,0)
 
-        self.pageIdx = upperEdgeToCounter(returnSignal,iniCounter=self.lastPageIdx)
+        self.pageIdx = flagToCounter(newPageFlag,iniCounter=self.lastPageIdx)
 
-        self.yIdx = self.yIdx - (self.pageIdx-self.lastPageIdx)*self.rawImage.shape[0]
+        #self.yIdx = self.yIdx - (self.pageIdx-self.lastPageIdx)*self.rawImage.shape[0]
+        
+        self.yIdx, _ = resetSignal(self.yIdx,newPageFlag, resetValue = -1)
+        
         self.lastPageIdx = self.pageIdx[-1]
         self.lastYIdx = self.yIdx[-1]
-
-        # just in case indexing goes over the image range
-        np.clip(self.yIdx,0,self.rawImage.shape[0]-1,out=self.yIdx)
 
         # TODO: take into account if YIdx was full
         # check if full image is recorded
         if np.any(returnSignal):
             self.flagFullImage = True
+            print('new page flag generated')
 
         # TODO: temporary : not in real data
         # remove the empty photons
         arrivedPhotons = self.scanner.stack[:,3]==1
         self.yIdx = self.yIdx[arrivedPhotons]
         self.xIdx = self.xIdx[arrivedPhotons]
+
+        #remove photons which are outside image size
+        insideImage = ((self.yIdx >= 0) & (self.yIdx <= self.rawImage.shape[1]-1)
+                        &(self.xIdx >= 0) & (self.xIdx <= self.rawImage.shape[0]-1))
+        self.yIdx = self.yIdx[insideImage]
+        self.xIdx = self.xIdx[insideImage]       
+
 
         # add the photons to the image
         np.add.at(self.rawImage,(self.yIdx,self.xIdx),1)

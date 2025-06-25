@@ -29,9 +29,9 @@ class VirtualBHScanner(BaseADetector):
     '''
 
     DEFAULT = {'name':'virtualBHScanner',
-               'pixelTime': 1e-6, # in [s], time per Pixel
+               'pixelTime': 1e-5, # in [s], time per Pixel
                'maxPhotonPerPixel': 10, # maximal number of event per pixel
-               'macroTimeIncrement': 1e-8, # in [s] time to increase the macrotime counter per one
+               'macroTimeIncrement': 1e-7, # in [s] time to increase the macrotime counter per one
                'imageSize' : np.array([512,512]),
                'scanOffSet' : np.array([5,10]) # add (horizontal,vertical) lines
                 # simulate returning path of the scanner 

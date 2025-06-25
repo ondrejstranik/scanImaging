@@ -14,7 +14,7 @@ def test_resetSignal():
     y = 3*x + 5
     x0 = np.random.rand(len(x))>0.95
 
-    yReset, bcg = resetSignal(y,x0)
+    yReset, bcg = resetSignal(y,x0, resetValue=-20)
 
     fig, ax = plt.subplots()
 

@@ -30,7 +30,7 @@ def upperEdgeToCounter(signal,threshold=0,iniCounter=0):
 
 
 
-def resetSignal(signal,flag):
+def resetSignal(signal,flag, resetValue=0):
     ''' function resetting signal value at given flags
     input:
     signal ... 1D array
@@ -39,14 +39,16 @@ def resetSignal(signal,flag):
     1D array with modified values
     1D array with background'''
 
+    s = np.zeros_like(signal)
+
     # no reset point
     if np.any(flag) == False:
-        return signal
+        return signal, s
     
     s0= signal[flag]
     ds0 = np.diff(s0,prepend=0)
+    ds0[0] = ds0[0]- resetValue
 
-    s = np.zeros_like(signal)
     s[flag]= ds0
     bcg = np.cumsum(s)
 
