@@ -2,30 +2,32 @@
 script to test  function processing flags
 '''
 #%%
-import numpy as np
-import matplotlib.pyplot as plt
 
-#%%
+from scanImaging.instrument.virtual.virtualScannerBH import VirtualBHScanner
+from scanImaging.instrument.scannerBHProcessor import ScannerBHProcessor
+from viscope.main import viscope
+from viscope.gui.aDetectorGUI import ADetectorGUI
+from viscope.gui.cameraViewGUI import CameraViewGUI
 
-lastCounter = 3
+bhScanner = VirtualBHScanner(name='BHScanner')
+bhScanner.connect()
+bhScanner.setParameter('threadingNow', True)
 
-n = int(30)
-x = np.arange(n)
-y = (np.random.rand(n)> 0.5)*5
+bhPro = ScannerBHProcessor(name='ScannerProcessor')
+bhPro.connect(scanner=bhScanner)
+bhPro.setParameter('threadingNow', True)
 
+adGui  = ADetectorGUI(viscope)
+adGui.setDevice(bhScanner)
 
-dy = np.diff(y,prepend=0)
-flagY = dy>0
-counter = lastCounter + np.cumsum(flagY)
+cvGui  = CameraViewGUI(viscope)
+cvGui.setDevice(bhPro)
 
-fig, ax = plt.subplots()
+bhScanner.startAcquisition()
+viscope.run()
 
-ax.plot(x,y, color='red', label= 'y')
-ax.plot(x,counter, color='red', label= 'counter')
-ax.legend()
-plt.show()
-
-
+bhPro.disconnect()
+bhScanner.disconnect()
 
 
 

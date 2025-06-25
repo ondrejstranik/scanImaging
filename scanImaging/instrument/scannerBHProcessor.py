@@ -85,12 +85,9 @@ class ScannerBHProcessor(BaseProcessor):
         self.macroTime,_ = resetSignal(self.macroTime, self.scanner.stack[:,1].astype(bool))
         self.lastMacroTime = self.macroTime[-1]
 
-        print(f'processor macroTime new line {self.macroTime}')
-
         # calculate x position
         self.xIdx = (self.macroTime//self.pixelTime).astype(int)
 
-        print(f'xIdx {self.xIdx}')
         # clip the x index if out of image x range
         np.clip(self.xIdx,0,self.rawImage.shape[1]-1,out=self.xIdx)
 
@@ -102,16 +99,13 @@ class ScannerBHProcessor(BaseProcessor):
                         self.pixelTime*self.rawImage.shape[1]*self.DEFAULT['newPageTimeFlag'])
 
         self.pageIdx = upperEdgeToCounter(returnSignal,iniCounter=self.lastPageIdx)
-        print(f'pageIdx {self.pageIdx}')
 
         self.yIdx = self.yIdx - (self.pageIdx-self.lastPageIdx)*self.rawImage.shape[0]
         self.lastPageIdx = self.pageIdx[-1]
         self.lastYIdx = self.yIdx[-1]
 
         # just in case indexing goes over the image range
-        np.clip(self.yIdx,0,self.rawImage.shape[0],out=self.yIdx)
-
-        print(f'yIdx {self.yIdx}')
+        np.clip(self.yIdx,0,self.rawImage.shape[0]-1,out=self.yIdx)
 
         # TODO: take into account if YIdx was full
         # check if full image is recorded

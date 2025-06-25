@@ -2,8 +2,6 @@
 
 import pytest
 
-import scanImaging.instrument
-
 @pytest.mark.GUI
 def test_VirtualScanner_2():
 
@@ -83,3 +81,40 @@ def test_VirtualScannerBH():
     ax.legend()
 
     plt.show()
+
+def test_ScannerBHProcessor():
+    ''' check the scanner data are processed '''
+
+    from scanImaging.instrument.virtual.virtualScannerBH import VirtualBHScanner
+    from scanImaging.instrument.scannerBHProcessor import ScannerBHProcessor
+    import numpy as np
+    import napari
+    import time
+
+    bhScanner = VirtualBHScanner()
+
+    bhPro = ScannerBHProcessor()
+    bhPro.connect(bhScanner)
+
+    # generate data
+    bhScanner.startAcquisition()
+    myStackList = []
+    for ii in range(5):
+        print(f'acquisition {ii}')
+        time.sleep(0.1)
+        myStackList.append(bhScanner.getStack())
+
+    bhScanner.stopAcquisition()
+
+    # process data
+    imStack = np.zeros((5,*bhPro.rawImage.shape))
+    for ii in range(5):
+        bhScanner.stack = myStackList[ii]
+        bhPro.processData()
+        imStack[ii,...] = bhPro.rawImage
+
+    # show data - visual check
+    viewer = napari.Viewer()
+    viewer.add_image(imStack, colormap='turbo')
+    napari.run()
+

@@ -50,6 +50,7 @@ class VirtualBHScanner(BaseADetector):
         self.macroTimeIncrement = self.DEFAULT['macroTimeIncrement']
         self.macroTimeTotal = 0 # start counting with start of the measurement, in [self.signalTime units]
         self.scanPosition = 0 # current position of the scanner in linear dimension
+        self.overflowFlag = False
 
         self.acquiring = False
         if self.acquiring is False:
@@ -116,19 +117,27 @@ class VirtualBHScanner(BaseADetector):
             scanRange = np.arange(self.scanPosition, newScanPosition)
             pixelIdx = (scanRange//int(self.pixelTime/self.signalTime)).astype(int)
             threshold = 0.5
+            
+            # detect overflow 
+            if pixelIdx[-1]>2*(np.prod(self.scanSize)-1):
+                self.overflowFlag = True
+                np.clip(pixelIdx,0,2*(np.prod(self.scanSize)-1),out=pixelIdx)
+                print(f'scanner overfLow!')
+
+
             # this probability calculation already contain the the poisson noise
             _virtualPhoton = (self.virtualProbeExtra[pixelIdx]*np.random.rand(len(pixelIdx))>threshold)*1
 
             # macro time + macroTimeFlag generation
-            print(f'time : {(currentTime - self.lastStackTime)}')
-            print(f'nSubPixel {nSubPixel}')
+            #print(f'time : {(currentTime - self.lastStackTime)}')
+            #print(f'nSubPixel {nSubPixel}')
             tMacro = self.macroTimeTotal + np.arange(nSubPixel+1)*self.signalTime/self.macroTimeIncrement
             tMacroSaw = (tMacro%2**12)
             tMacroFlag = (tMacroSaw[1:] - tMacroSaw[0:-1])<0
 
             # update macroTimeTotal
             self.macroTimeTotal = tMacro[-1]
-            print(f'len(tMacroSaw): {len(tMacroSaw)}')
+            #print(f'len(tMacroSaw): {len(tMacroSaw)}')
             
             # new line flag generation
             newLineFlag = scanRange%(self.scanSize[1]*self.DEFAULT['maxPhotonPerPixel'])==0
@@ -137,7 +146,7 @@ class VirtualBHScanner(BaseADetector):
             outerRows = np.logical_and(scanRange>np.prod(self.scanSize-self.DEFAULT['scanOffSet']*[1,0])*self.DEFAULT['maxPhotonPerPixel']-1,
                                         scanRange< self.maxScanPosition)
             #outerRows = scanRange< self.maxScanPosition
-            print(f'outerRows: {outerRows}')
+            #print(f'outerRows: {outerRows}')
             newLineFlag[outerRows]= False
 
             # update the position, correct for roll over
