@@ -1,35 +1,52 @@
 ''''
-script to test  function processing flags
+script to test  HBdata decoding and encoding
 '''
 #%%
+import numpy as np
 
-from scanImaging.instrument.virtual.virtualScannerBH import VirtualBHScanner
-from scanImaging.instrument.scannerBHProcessor import ScannerBHProcessor
-from viscope.main import viscope
-from viscope.gui.aDetectorGUI import ADetectorGUI
-from viscope.gui.cameraViewGUI import CameraViewGUI
+#%%
 
-bhScanner = VirtualBHScanner(name='BHScanner')
-bhScanner.connect()
-bhScanner.setParameter('threadingNow', True)
+nData = 10
 
-bhPro = ScannerBHProcessor(name='ScannerProcessor')
-bhPro.connect(scanner=bhScanner)
-bhPro.setParameter('threadingNow', True)
+newLineFlag = np.random.randint(2,size= nData)
+newMacroTimeFlag = np.random.randint(2,size= nData)
+stackOverflowFlag = np.random.randint(2,size= nData)
+macroTime= np.random.randint(2**12, size=nData)
+microTime= np.random.randint(2**12, size=nData)
+channel = np.random.randint(2**4, size=nData)
 
-adGui  = ADetectorGUI(viscope)
-adGui.setDevice(bhScanner,processor=bhPro)
+#%%
 
-cvGui  = CameraViewGUI(viscope)
-cvGui.setDevice(bhPro)
-
-#bhScanner.startAcquisition()
-viscope.run()
-
-bhScanner.stopAcquisition()
-bhPro.disconnect()
-bhScanner.disconnect()
+def decode():
 
 
+    data= np.empty(nData, dtype='int32')
+    noPhotonFlag = newLineFlag or newMacroTimeFlag or stackOverflowFlag
+
+    data = ((noPhotonFlag<<31) + (newMacroTimeFlag<<30) 
+            + (stackOverflowFlag<<29) + (newLineFlag <<28) +
+            (microTime<<16) + (channel<<12) + (macroTime))
+    return data
+
+def encode(data):
+
+    nTag = len(data)
+
+    nLTag = np.empty(nTag,dtype='uint8')
+    nMTTag = np.empty(nTag,dtype='uint8')
+    sOTag = np.empty(nTag,dtype='uint8')
+    nPTag = np.empty(nTag,dtype='uint8')
+    maT = np.empty(nTag,dtype='uint16')
+    miT = np.empty(nTag,dtype='uint16')
+    ch = np.empty(nTag,dtype='uint8')
+
+    macroT= (data&0x0FFF).astype('uint16')
 
 
+
+
+
+
+
+
+# %%

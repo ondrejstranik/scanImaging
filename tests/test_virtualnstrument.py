@@ -118,3 +118,34 @@ def test_ScannerBHProcessor():
     viewer.add_image(imStack, colormap='turbo')
     napari.run()
 
+
+def test_ScannerBHProcessor2():
+    ''' check the scanner data are processed live '''
+    from scanImaging.instrument.virtual.virtualScannerBH import VirtualBHScanner
+    from scanImaging.instrument.scannerBHProcessor import ScannerBHProcessor
+    from viscope.main import viscope
+    from viscope.gui.aDetectorGUI import ADetectorGUI
+    from viscope.gui.cameraViewGUI import CameraViewGUI
+
+    bhScanner = VirtualBHScanner(name='BHScanner')
+    bhScanner.connect()
+    bhScanner.setParameter('threadingNow', True)
+
+    bhPro = ScannerBHProcessor(name='ScannerProcessor')
+    bhPro.connect(scanner=bhScanner)
+    bhPro.setParameter('threadingNow', True)
+
+    adGui  = ADetectorGUI(viscope)
+    #adGui.setDevice(bhScanner,processor=bhPro)
+    adGui.setDevice(bhScanner)
+
+
+    cvGui  = CameraViewGUI(viscope)
+    cvGui.setDevice(bhPro)
+
+    #bhScanner.startAcquisition()
+    viscope.run()
+
+    bhPro.disconnect()
+    bhScanner.stopAcquisition()
+    bhScanner.disconnect()
