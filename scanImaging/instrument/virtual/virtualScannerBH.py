@@ -125,7 +125,7 @@ class VirtualBHScanner(BaseADetector):
             tMacro = self.macroTimeTotal + np.arange(nSubPixel+1)*self.signalTime/self.macroTimeIncrement
             tMacroSaw = (tMacro%2**12)
             tMacroFlag = (tMacroSaw[1:] - tMacroSaw[0:-1])<0
-            
+
             # update macroTimeTotal
             self.macroTimeTotal = tMacro[-1]
             print(f'len(tMacroSaw): {len(tMacroSaw)}')
@@ -134,7 +134,7 @@ class VirtualBHScanner(BaseADetector):
             newLineFlag = scanRange%(self.scanSize[1]*self.DEFAULT['maxPhotonPerPixel'])==0
             # remove new line flag from rows below sample
             # this rows imitates return of the beam
-            outerRows = np.logical_and(scanRange>np.prod(self.scanSize-self.DEFAULT['scanOffSet']*[1,0])*self.DEFAULT['maxPhotonPerPixel'],
+            outerRows = np.logical_and(scanRange>np.prod(self.scanSize-self.DEFAULT['scanOffSet']*[1,0])*self.DEFAULT['maxPhotonPerPixel']-1,
                                         scanRange< self.maxScanPosition)
             #outerRows = scanRange< self.maxScanPosition
             print(f'outerRows: {outerRows}')

@@ -11,19 +11,20 @@ import os
 import time
 import numpy as np
 from viscope.instrument.base.baseProcessor import BaseProcessor
+from scanImaging.algorithm.signalProcessFunction import resetSignal, upperEdgeToCounter
 
 
-class ScannerProcessorBH(BaseProcessor):
+class ScannerBHProcessor(BaseProcessor):
     ''' class to collect data from virtual scanner'''
     DEFAULT = {'name': 'ScannerProcessor',
-                'pixelTime': 1e2, # 
+                'pixelTime': 105, # 
                 'newPageTimeFlag': 3 # threshold for new page in the macroTime 
                 }
 
     def __init__(self, name=None, **kwargs):
         ''' initialisation '''
 
-        if name== None: name= ScannerProcessorBH.DEFAULT['name']
+        if name== None: name= ScannerBHProcessor.DEFAULT['name']
         super().__init__(name=name, **kwargs)
         
         # asynchronous Detector
@@ -36,7 +37,7 @@ class ScannerProcessorBH(BaseProcessor):
         self.rawImage = None
         self.xIdx = 0 # quick axis
         self.yIdx = 0 # slow axis
-        self.lastYIdx = 0
+        self.lastYIdx = -1 # at the start of scanning the y-flag is given
         self.pageIdx = 0
         self.lastPageIdx = 0
         self.macroTime = 0
@@ -68,43 +69,21 @@ class ScannerProcessorBH(BaseProcessor):
         if name== 'scanner':
             return self.aDetector
 
-    def _resetFunction(self,flagX,y):
-        ''' function returning y with values reset to zero at flagX (bool) points'''
-        y0= y[flagX]
-        # no reset point
-        if len(y0) == 0: return y
-        dy0 = np.empty_like(y0)
-        dy0[0] =y0[0]
-        # more then one reset point
-        if len(y0)>1: dy0[1:] = y0[1:]-y0[:-1]
-        sy0 = np.zeros_like(y)
-        sy0[flagX]= dy0
-        bcg = np.cumsum(sy0)
-        return y-bcg
-
     def processData(self):
         ''' process newly arrived data '''
 
         #print(f"processing data from {self.DEFAULT['name']}")
 
-        # calculate total MacroTime
-        macroSaw = self.scanner.stack[:,2]
-        MacroSawIncrement = np.empty_like(macroSaw)
-        MacroSawIncrement[0]= macroSaw[0] - self.lastMacroSawValue
-        MacroSawIncrement[1:] = macroSaw[1:]-macroSaw[:-1]
-        self.lastMacroSawValue = macroSaw[-1]
-
-        # add the overflow of macrotime
-        MacroSawIncrement =  MacroSawIncrement + self.scanner.stack[:,0]*2**12
-        self.macroTime = self.lastMacroTime + np.cumsum(MacroSawIncrement)
-
-        print(f'processor macroTime {self.macroTime}')
+        # calculate total macroTime
+        self.macroTime = (self.lastMacroTime
+                            + self.scanner.stack[:,2] -self.lastMacroSawValue
+                            + np.cumsum(self.scanner.stack[:,0]*2**12)
+                        )
+        self.lastMacroSawValue = self.scanner.stack[-1,2]
 
         # reset macroTime on each new line
-        self.macroTime = self._resetFunction(self.scanner.stack[:,1].astype(bool),self.macroTime)
+        self.macroTime,_ = resetSignal(self.macroTime, self.scanner.stack[:,1].astype(bool))
         self.lastMacroTime = self.macroTime[-1]
-
-
 
         print(f'processor macroTime new line {self.macroTime}')
 
@@ -117,34 +96,26 @@ class ScannerProcessorBH(BaseProcessor):
 
         # calculate y position
         self.yIdx = self.lastYIdx + np.cumsum(self.scanner.stack[:,1]).astype(int)
+  
+        # calculate page position
+        returnSignal = (self.macroTime > 
+                        self.pixelTime*self.rawImage.shape[1]*self.DEFAULT['newPageTimeFlag'])
+
+        self.pageIdx = upperEdgeToCounter(returnSignal,iniCounter=self.lastPageIdx)
+        print(f'pageIdx {self.pageIdx}')
+
+        self.yIdx = self.yIdx - (self.pageIdx-self.lastPageIdx)*self.rawImage.shape[0]
+        self.lastPageIdx = self.pageIdx[-1]
         self.lastYIdx = self.yIdx[-1]
 
+        # just in case indexing goes over the image range
+        np.clip(self.yIdx,0,self.rawImage.shape[0],out=self.yIdx)
 
-        # calculate page position
-        '''               
-        self.pageIdx = self.lastPageIdx + np.cumsum(self.macroTime> (self.pixelTime*self.rawImage.shape[1]*
-                        self.DEFAULT['newPageTimeFlag'])).astype(int)
-        #self.yIdx[self.pageIdx>self.lastPageIdx]-= self.rawImage.shape[0]
-        self.yIdx = self.yIdx - self.rawImage.shape[0]*(self.pageIdx-self.lastPageIdx)
-        self.lastPageIdx = self.pageIdx[-1]
-
-        '''
-        newPageIdx = np.argwhere(self.macroTime> (self.pixelTime*self.rawImage.shape[1]*
-                        self.DEFAULT['newPageTimeFlag']))
-        if len(newPageIdx)>0:
-            self.yIdx[newPageIdx[0]:] -= self.yIdx[newPageIdx[0]]
-
-
-        # TODO: make roll over algorithm
-        np.clip(self.yIdx,0,self.rawImage.shape[0]-1,out=self.yIdx)
         print(f'yIdx {self.yIdx}')
 
-
-
-
-        #TODO: correct it
+        # TODO: take into account if YIdx was full
         # check if full image is recorded
-        if np.any(self.pageIdx==1):
+        if np.any(returnSignal):
             self.flagFullImage = True
 
         # TODO: temporary : not in real data

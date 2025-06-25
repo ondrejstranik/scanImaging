@@ -1,7 +1,7 @@
 ''' testing script'''
 #%%
 from scanImaging.instrument.virtual.virtualScannerBH import VirtualBHScanner
-from scanImaging.instrument.scannerProcessorBH import ScannerProcessorBH
+from scanImaging.instrument.scannerBHProcessor import ScannerBHProcessor
 import numpy as np
 import napari
 import time
@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 #%%
 bhScanner = VirtualBHScanner()
 
-bhPro = ScannerProcessorBH()
+bhPro = ScannerBHProcessor()
 bhPro.connect(bhScanner)
 
 bhScanner.startAcquisition()
