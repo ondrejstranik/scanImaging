@@ -124,7 +124,7 @@ def test_ScannerBHProcessor2():
     from scanImaging.instrument.virtual.virtualScannerBH import VirtualBHScanner
     from scanImaging.instrument.scannerBHProcessor import ScannerBHProcessor
     from viscope.main import viscope
-    from viscope.gui.aDetectorGUI import ADetectorGUI
+    from scanImaging.gui.scannerBHGUI import ScannerBHGUI
     from viscope.gui.cameraViewGUI import CameraViewGUI
 
     bhScanner = VirtualBHScanner(name='BHScanner')
@@ -135,17 +135,16 @@ def test_ScannerBHProcessor2():
     bhPro.connect(scanner=bhScanner)
     bhPro.setParameter('threadingNow', True)
 
-    adGui  = ADetectorGUI(viscope)
-    #adGui.setDevice(bhScanner,processor=bhPro)
-    adGui.setDevice(bhScanner)
-
+    adGui  = ScannerBHGUI(viscope)
+    adGui.setDevice(bhScanner,processor=bhPro)
+    print(f'processor in Gui: {adGui.processor}')
+    
 
     cvGui  = CameraViewGUI(viscope)
     cvGui.setDevice(bhPro)
 
-    #bhScanner.startAcquisition()
     viscope.run()
 
     bhPro.disconnect()
-    bhScanner.stopAcquisition()
+    bhScanner.startAcquisition()
     bhScanner.disconnect()

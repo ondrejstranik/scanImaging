@@ -88,6 +88,7 @@ class VirtualBHScanner(BaseADetector):
         self.macroTimeTotal = 0 # start recording the total time
         self.lastStackTime = time.time_ns() #self.acquisitionStartTime*1
         self.acquisitionStopTime = None        
+        self.scanPosition = 0
         # set arbitrary start position of scanning
         # TODO: switched off for debugging
         #self.scanPosition = np.random.randint(int(self.maxScanPosition)) 

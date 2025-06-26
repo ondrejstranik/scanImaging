@@ -6,10 +6,10 @@ from typing import Annotated
 from qtpy.QtCore import Qt
 from viscope.gui.baseGUI import BaseGUI
 
-class ADetectorGUI(BaseGUI):
+class ScannerBHGUI(BaseGUI):
     ''' class for ADetector gui'''
 
-    DEFAULT = {'nameGUI': 'ADetector'}
+    DEFAULT = {'nameGUI': 'ScannerBH'}
 
     def __init__(self, viscope, **kwargs):
         ''' initialise the class '''
@@ -19,7 +19,7 @@ class ADetectorGUI(BaseGUI):
         self.parameterADetectorGui = None
 
         # prepare the gui of the class
-        ADetectorGUI.__setWidget(self)        
+        ScannerBHGUI.__setWidget(self)        
 
     def __setWidget(self):
         ''' prepare the gui '''
@@ -27,7 +27,9 @@ class ADetectorGUI(BaseGUI):
         def parameterADetectorGui(
             acquisition = False,
             ):
-            if acquisition: self.device.startAcquisition()
+            if acquisition: 
+                 self.processor.resetCounter()
+                 self.device.startAcquisition()
             else:
                  self.device.stopAcquisition()
 
@@ -35,10 +37,11 @@ class ADetectorGUI(BaseGUI):
         self.parameterADetectorGui = parameterADetectorGui
         self.dw =self.vWindow.addParameterGui(self.parameterADetectorGui,name=self.DEFAULT['nameGUI'])
 
-    def setDevice(self,device):
+    def setDevice(self,device,processor=None):
         ''' set the laser '''
 
         super().setDevice(device)
+        self.processor = processor
 
         # set gui parameters
         self.parameterADetectorGui.acquisition.value = self.device.acquiring
