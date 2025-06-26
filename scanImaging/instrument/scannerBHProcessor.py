@@ -65,6 +65,11 @@ class ScannerBHProcessor(BaseProcessor):
         super().connect()
         if scanner is not None: self.setParameter('scanner',scanner)
 
+    def disconnect(self):
+        super().disconnect()
+        self.flagToProcess.set() 
+
+
     def setParameter(self,name, value):
         ''' set parameter of the spectral camera'''
         super().setParameter(name,value)
