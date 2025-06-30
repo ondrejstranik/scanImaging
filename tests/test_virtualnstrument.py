@@ -132,28 +132,17 @@ def test_ScannerBHProcessor2():
     bhScanner.connect()
     bhScanner.setParameter('threadingNow', True)
 
-    bhPro = ScannerBHProcessor(name='ScannerProcessor')
+    bhPro = ScannerBHProcessor(name='ScannerBHProcessor')
     bhPro.connect(scanner=bhScanner)
     bhPro.setParameter('threadingNow', True)
 
     adGui  = ScannerBHGUI(viscope)
     adGui.setDevice(bhScanner,processor=bhPro)
 
-    cvGui  = CameraViewGUI(viscope)
+    cvGui  = CameraViewGUI(viscope,vWindow='new')
     cvGui.setDevice(bhPro)
 
     viscope.run()
-    #time.sleep(1)
-    print('ah')
-    #bhPro.resetCounter()
-    #bhScanner.startAcquisition()
-    #time.sleep(1)
-    print('ahah')
-
     bhPro.disconnect()
-    #bhScanner.stopAcquisition()
-    #time.sleep(2)
-    #bhScanner.flagLoop.clear()
     bhScanner.disconnect()
-    #time.sleep(2)
-    #bhPro.flagLoop.set()
+

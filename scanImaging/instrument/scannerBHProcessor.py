@@ -67,7 +67,7 @@ class ScannerBHProcessor(BaseProcessor):
 
     def disconnect(self):
         super().disconnect()
-        self.flagToProcess.set() 
+        #self.flagToProcess.set() 
 
 
     def setParameter(self,name, value):
