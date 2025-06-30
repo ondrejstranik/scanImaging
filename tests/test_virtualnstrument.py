@@ -146,3 +146,4 @@ def test_ScannerBHProcessor2():
     bhPro.disconnect()
     bhScanner.disconnect()
 
+
