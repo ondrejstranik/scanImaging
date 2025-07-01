@@ -56,22 +56,6 @@ class BHData():
 
 #%%
 
-myBHData = BHData()
-myBHData._setArbitraryData(5)
 
-myStream = myBHData.dataToStream()
-myBHData2 = BHData()
-myBHData2.streamToData(myStream)
-
-print(f'stream \n {myStream}')
-print(f'microtime original \n {myBHData.microTime}')
-print(f'microtime recovered \n {myBHData2.microTime}')
-
-print(np.all(myBHData.microTime==myBHData2.microTime))
-
-
-
-
-
-
-# %%
+if __name__ == '__main__':
+    pass
