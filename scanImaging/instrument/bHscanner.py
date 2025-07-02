@@ -70,19 +70,12 @@ class BHScanner(BaseADetector):
     def getStack(self):
         ''' get data from the stack'''        
 
-        data = []  # Collect arrays of data into a list.
-        collectBuffer = True
-        while collectBuffer:
-            buffer =  spcm.read_fifo_to_array(self.modeNumber, self.bufferSize)
-            if len(buffer):
-                data.append(buffer)
-            if len(buffer) < self.bufferSize: # Buffer is not full
-                collectBuffer = False
+        buffer =  np.array(spcm.read_fifo_to_array(self.modeNumber, self.bufferSize)).view(np.uint32)
         
         # TODO: move this to the processor 
         # convert the stream to stack further process by bhScannerProcessor
-        if len(data) > 0:
-            self.bhData.streamToData(np.concatenate(data).view(np.uint32))
+        if len(buffer) > 0:
+            self.bhData.streamToData(buffer)
             self.stack = np.vstack([self.bhData.newMacroTimeFlag,self.bhData.newLineFlag,self.bhData.macroTime]).T
         else:
             self.stack = None

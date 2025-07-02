@@ -18,7 +18,7 @@ class ScannerBHProcessor(BaseProcessor):
     ''' class to collect data from virtual scanner'''
     DEFAULT = {'name': 'ScannerProcessor',
                 'pixelTime': 105, # 
-                'newPageTimeFlag': 3 # threshold for new page in the macroTime 
+                'newPageTimeFlag': 10 # threshold for new page in the macroTime 
                 }
 
     def __init__(self, name=None, **kwargs):
