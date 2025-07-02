@@ -29,7 +29,7 @@ class BHScanner(BaseADetector):
         self.bufferSize = self.DEFAULT['bufferSize'] 
         self.configFile = self.DEFAULT['configFile']
         self.modeNumber = self.DEFAULT['modeNumber']
-        self.imageSize = self.DEFAULT['modelNumber']
+        self.imageSize = self.DEFAULT['imageSize']
 
         self.bhData = BHData()
 
@@ -50,6 +50,11 @@ class BHScanner(BaseADetector):
         print(f' adjust parameters \n')
         for par, val in res2.items():
             print(f"{par} = {val}")
+
+    def disconnect(self):
+        ''' disconnect the instrument '''
+        super().disconnect()
+        spcm.close()
 
 
     def startAcquisition(self):
@@ -76,8 +81,11 @@ class BHScanner(BaseADetector):
         
         # TODO: move this to the processor 
         # convert the stream to stack further process by bhScannerProcessor
-        self.bhData.streamToData(np.concatenate(data).view(np.uint32))
-        self.stack = np.vstack([self.bhData.newMacroTimeFlag,self.bhData.newLineFlag,self.bhData.macroTime]).T
+        if len(data) > 0:
+            self.bhData.streamToData(np.concatenate(data).view(np.uint32))
+            self.stack = np.vstack([self.bhData.newMacroTimeFlag,self.bhData.newLineFlag,self.bhData.macroTime]).T
+        else:
+            self.stack = None
         return self.stack
 
 if __name__ == '__main__':

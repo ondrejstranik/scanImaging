@@ -121,14 +121,16 @@ def test_ScannerBHProcessor():
 
 def test_ScannerBHProcessor2():
     ''' check the scanner data are processed live '''
-    from scanImaging.instrument.virtual.virtualScannerBH import VirtualBHScanner
+    #from scanImaging.instrument.virtual.virtualScannerBH import VirtualBHScanner
+    from scanImaging.instrument.bHscanner   import BHScanner
     from scanImaging.instrument.scannerBHProcessor import ScannerBHProcessor
     from viscope.main import viscope
     from scanImaging.gui.scannerBHGUI import ScannerBHGUI
     from viscope.gui.cameraViewGUI import CameraViewGUI
     import time
 
-    bhScanner = VirtualBHScanner(name='BHScanner')
+    #bhScanner = VirtualBHScanner(name='BHScanner')
+    bhScanner = BHScanner(name='BHScanner')
     bhScanner.connect()
     bhScanner.setParameter('threadingNow', True)
 
