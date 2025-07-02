@@ -132,9 +132,9 @@ class ScannerBHProcessor(BaseProcessor):
             self.flagFullImage = True
             print('new page flag generated')
 
-        # TODO: temporary : not in real data
-        # remove the empty photons
-        arrivedPhotons = self.scanner.stack[:,3]==1
+        # remove flags from data
+        #print(f'scanner stack 0 \n {self.scanner.stack[:,0]==0}')
+        arrivedPhotons = ((self.scanner.stack[:,0]==0) & (self.scanner.stack[:,1]==0))
         self.yIdx = self.yIdx[arrivedPhotons]
         self.xIdx = self.xIdx[arrivedPhotons]
 

@@ -23,7 +23,10 @@ class VirtualBHScanner(BaseADetector):
     
     data are scanned horizontally, single lined (this is given by a separate scanner)
 
+    stack is in the form:
+    columns of : tMacroFlag,newLineFlag,tMacroSaw,_virtualPhoton
 
+    
 
 
     '''
@@ -157,10 +160,13 @@ class VirtualBHScanner(BaseADetector):
                 self.scanPosition = newScanPosition
 
             # generate the signal
-            # TODO: remove the events without photons (but keep the flags)
-            
-            
-            virtualStack = np.vstack([tMacroFlag,newLineFlag,tMacroSaw[1:],_virtualPhoton]).T
+            # remove the events without photons (but keep the flag event)
+            validSignal = ((_virtualPhoton ==1) | tMacroFlag | newLineFlag)
+            print(f'size of stack {np.sum(validSignal*1)}')
+
+            virtualStack = np.vstack([tMacroFlag[validSignal],
+                                      newLineFlag[validSignal],
+                                      tMacroSaw[1:][validSignal]]).T
 
 
         self.lastStackTime = currentTime

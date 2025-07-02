@@ -24,7 +24,7 @@ streamData = np.load(str(folder / file))
 
 
 # %%
-'''
+
 #print("Clean Photon Events:", filter_clean_photon_events(data))
 #print("Microtimes:", get_microtimes(data))
 #print("Channel:", get_channel(data))
@@ -38,9 +38,9 @@ imageP = ImageParameter()
 imageP.set_maxy_from_py(pixel_y)
 
 
-#image = get_raw_image_data(pixel_x,pixel_y,imageP)
-image = get_image_data(pixel_x,pixel_y,micro_time,imageP)
-'''
+imageG = get_raw_image_data(pixel_x,pixel_y,imageP)
+#imageG = get_image_data(pixel_x,pixel_y,micro_time,imageP)
+
 
 #%%
 
@@ -50,7 +50,7 @@ data.streamToData(streamData)
 
 myS = VirtualBHScanner()
 
-myS.stack = np.vstack([data.newMacroTimeFlag,data.newLineFlag,data.macroTime,data.newLineFlag*0 + 1]).T
+myS.stack = np.vstack([data.newMacroTimeFlag,data.newLineFlag, data.macroTime]).T
 
 myP = ScannerBHProcessor()
 myP.setParameter('scanner', myS)
@@ -64,7 +64,7 @@ image = myP.rawImage
 #%%
 viewer = napari.Viewer()
 viewer.add_image(image)
-
+viewer.add_image(imageG)
 napari.run()
 
 # %%
