@@ -8,6 +8,8 @@ from viscope.instrument.base.baseADetector import BaseADetector
 from scanImaging.algorithm.dataCoding import BHData
 
 from bh_spc import spcm
+from pathlib import Path
+import scanImaging
 
 
 class BHScanner(BaseADetector):
@@ -32,6 +34,9 @@ class BHScanner(BaseADetector):
         self.imageSize = self.DEFAULT['imageSize']
 
         self.bhData = BHData()
+        self.dataToSave = []
+        self.saveIdx = 0
+        self.filename = 'rawBHData_{}.npy'
 
     def connect(self):
         ''' connect to the instrument '''
@@ -66,20 +71,34 @@ class BHScanner(BaseADetector):
         '''stop detector collecting data in a stack '''
         super().stopAcquisition()
         spcm.stop_measurement(self.modeNumber)
+        
+        fullPath = Path(scanImaging.__file__).parent / 'DATA' / self.filename.format(self.saveIdx)
+        np.save(fullPath,np.concatenate(self.dataToSave).view(np.uint32))
+        self.saveIdx +=1
 
     def getStack(self):
         ''' get data from the stack'''        
+        data = []  # Collect arrays of data into a list.
+        while True:
+            buffer =  spcm.read_fifo_to_array(self.modeNumber, self.bufferSize)
+            if len(buffer):
+                data.append(buffer)
+                self.dataToSave.append(buffer)
+                if len(buffer) < self.bufferSize: # Buffer is not full
+                    break
+            else:
+                break # Buffer is zero return
 
-        buffer =  np.array(spcm.read_fifo_to_array(self.modeNumber, self.bufferSize)).view(np.uint32)
-        
         # TODO: move this to the processor 
         # convert the stream to stack further process by bhScannerProcessor
-        if len(buffer) > 0:
-            self.bhData.streamToData(buffer)
+        if len(data) > 0:
+            self.bhData.streamToData(np.concatenate(data).view(np.uint32))
             self.stack = np.vstack([self.bhData.newMacroTimeFlag,self.bhData.newLineFlag,self.bhData.macroTime]).T
         else:
             self.stack = None
+
         return self.stack
+
 
 if __name__ == '__main__':
 

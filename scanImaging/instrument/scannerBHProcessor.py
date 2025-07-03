@@ -17,8 +17,8 @@ from scanImaging.algorithm.signalProcessFunction import resetSignal, flagToCount
 class ScannerBHProcessor(BaseProcessor):
     ''' class to collect data from virtual scanner'''
     DEFAULT = {'name': 'ScannerProcessor',
-                'pixelTime': 105, # 
-                'newPageTimeFlag': 10 # threshold for new page in the macroTime 
+                'pixelTime': 90, # 
+                'newPageTimeFlag': 3 # threshold for new page in the macroTime 
                 }
 
     def __init__(self, name=None, **kwargs):
@@ -130,7 +130,9 @@ class ScannerBHProcessor(BaseProcessor):
         # check if full image is recorded
         if np.any(returnSignal):
             self.flagFullImage = True
-            print('new page flag generated')
+            print(f'new page flag generated: {np.sum(newPageFlag)}')
+            print(f'new page index {np.max(self.pageIdx)}')
+
 
         # remove flags from data
         #print(f'scanner stack 0 \n {self.scanner.stack[:,0]==0}')
@@ -146,6 +148,7 @@ class ScannerBHProcessor(BaseProcessor):
 
 
         # add the photons to the image
+        #self.rawImage = 0*self.rawImage
         np.add.at(self.rawImage,(self.yIdx,self.xIdx),1)
 
 
