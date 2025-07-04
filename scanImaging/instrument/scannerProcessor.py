@@ -58,15 +58,16 @@ class ScannerProcessor(BaseProcessor):
         #print(f"processing data from {self.DEFAULT['name']}")
         
         try:
-            #print(f'scanner stack \n {self.scanner.stack}')
+            stack = self.scanner.getStack()
+            #print(f'scanner stack \n {stack}')
             # adding the values
-            self.rawImage[(self.scanner.stack[:,1].astype(int),self.scanner.stack[:,0].astype(int))] = (
-                self.rawImage[(self.scanner.stack[:,1].astype(int),self.scanner.stack[:,0].astype(int))] + 
-                self.scanner.stack[:,2]) 
+            self.rawImage[(stack[:,1].astype(int),stack[:,0].astype(int))] = (
+                self.rawImage[(stack[:,1].astype(int),stack[:,0].astype(int))] + 
+                stack[:,2]) 
 
-            #self.rawImage[(self.scanner.stack[:,0].astype(int),
-            #               self.scanner.stack[:,1].astype(int))] = (
-            #    self.scanner.stack[:,2]) 
+            #self.rawImage[(stack[:,0].astype(int),
+            #               stack[:,1].astype(int))] = (
+            #    stack[:,2]) 
 
 
         except:
@@ -75,9 +76,6 @@ class ScannerProcessor(BaseProcessor):
             #print(f'time {self.time}')
             #print(f'signal {self.signal}')
 
-        # indicate that data from at ADetector were processed
-        # probably not necessary it is done by the processor loop
-        #self.aDetector.flagLoop.clear()
 
 
 #%%

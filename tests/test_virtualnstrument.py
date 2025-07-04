@@ -15,7 +15,6 @@ def test_VirtualScanner_2():
     scanner = VirtualScanner()
     scanner.connect()
     scanner.setParameter('threadingNow',True)
-    scanner.startAcquisition()
 
     sProc = ScannerProcessor(name='ScannerProcessor')
     sProc.connect(scanner=scanner)
@@ -51,9 +50,8 @@ def test_VirtualScanner():
         if scanner.flagLoop.is_set():
             data = scanner.getStack()
             print(f'stack \n {data}')
-            scanner.flagLoop.clear()
 
-    scanner.startAcquisition()
+    scanner.stopAcquisition()
     scanner.disconnect()
     #%%
 
@@ -84,34 +82,29 @@ def test_VirtualScannerBH():
 
 def test_ScannerBHProcessor():
     ''' check the scanner data are processed '''
-
     from scanImaging.instrument.virtual.virtualScannerBH import VirtualBHScanner
-    from scanImaging.instrument.scannerBHProcessor import ScannerBHProcessor
+    from scanImaging.instrument.bHScannerProcessor import BHScannerProcessor
     import numpy as np
     import napari
     import time
 
     bhScanner = VirtualBHScanner()
 
-    bhPro = ScannerBHProcessor()
+    bhPro = BHScannerProcessor()
     bhPro.connect(bhScanner)
 
-    # generate data
+    # generate and process data
     bhScanner.startAcquisition()
-    myStackList = []
+    imStack = np.zeros((5,*bhPro.rawImage.shape))
+
     for ii in range(5):
         print(f'acquisition {ii}')
         time.sleep(0.1)
-        myStackList.append(bhScanner.getStack())
-
-    bhScanner.stopAcquisition()
-
-    # process data
-    imStack = np.zeros((5,*bhPro.rawImage.shape))
-    for ii in range(5):
-        bhScanner.stack = myStackList[ii]
+        bhScanner.updateStack()
         bhPro.processData()
         imStack[ii,...] = bhPro.rawImage
+
+    bhScanner.stopAcquisition()
 
     # show data - visual check
     viewer = napari.Viewer()
@@ -119,22 +112,21 @@ def test_ScannerBHProcessor():
     napari.run()
 
 
+
 def test_ScannerBHProcessor2():
     ''' check the scanner data are processed live '''
-    #from scanImaging.instrument.virtual.virtualScannerBH import VirtualBHScanner
-    from scanImaging.instrument.bHscanner   import BHScanner
-    from scanImaging.instrument.scannerBHProcessor import ScannerBHProcessor
+    from scanImaging.instrument.virtual.virtualScannerBH import VirtualBHScanner
+    from scanImaging.instrument.bHScannerProcessor import BHScannerProcessor
     from viscope.main import viscope
     from scanImaging.gui.scannerBHGUI import ScannerBHGUI
     from viscope.gui.cameraViewGUI import CameraViewGUI
     import time
 
-    #bhScanner = VirtualBHScanner(name='BHScanner')
-    bhScanner = BHScanner(name='BHScanner')
+    bhScanner = VirtualBHScanner(name='BHScanner')
     bhScanner.connect()
     bhScanner.setParameter('threadingNow', True)
 
-    bhPro = ScannerBHProcessor(name='ScannerBHProcessor')
+    bhPro = BHScannerProcessor(name='BHScannerProcessor')
     bhPro.connect(scanner=bhScanner)
     bhPro.setParameter('threadingNow', True)
 

@@ -12,19 +12,19 @@ from ismdmdao.bhdataconverter import (translate_to_pixels,
 )
 import napari
 from scanImaging.instrument.virtual.virtualScannerBH import VirtualBHScanner
-from scanImaging.instrument.scannerBHProcessor import ScannerBHProcessor
+from scanImaging.instrument.bHScannerProcessor import BHScannerProcessor
 
 
 #%%
 myP = Path(scanImaging.__file__)
 folder =  myP.parent / 'DATA'
 file = 'voltag_one_image_mirror.npy'
-
+#file = 'rawBHData_0.npy'
 streamData = np.load(str(folder / file))
 
 
 # %%
-
+'''
 #print("Clean Photon Events:", filter_clean_photon_events(data))
 #print("Microtimes:", get_microtimes(data))
 #print("Channel:", get_channel(data))
@@ -40,7 +40,7 @@ imageP.set_maxy_from_py(pixel_y)
 
 imageG = get_raw_image_data(pixel_x,pixel_y,imageP)
 #imageG = get_image_data(pixel_x,pixel_y,micro_time,imageP)
-
+'''
 
 #%%
 
@@ -52,7 +52,9 @@ myS = VirtualBHScanner()
 
 myS.stack = np.vstack([data.newMacroTimeFlag,data.newLineFlag, data.macroTime]).T
 
-myP = ScannerBHProcessor()
+print(f'overflow :{np.sum(data.stackOvSrflowFlag*1)}')
+
+myP = BHScannerProcessor()
 myP.setParameter('scanner', myS)
 
 myP.processData()
@@ -64,7 +66,7 @@ image = myP.rawImage
 #%%
 viewer = napari.Viewer()
 viewer.add_image(image)
-viewer.add_image(imageG)
+#viewer.add_image(imageG)
 napari.run()
 
 # %%

@@ -1,28 +1,30 @@
 ''' testing script'''
-''' check the scanner data are processed live '''
 from scanImaging.instrument.virtual.virtualScannerBH import VirtualBHScanner
-from scanImaging.instrument.scannerBHProcessor import ScannerBHProcessor
-from viscope.main import viscope
-from scanImaging.gui.scannerBHGUI import ScannerBHGUI
-from viscope.gui.cameraViewGUI import CameraViewGUI
+from scanImaging.instrument.bHScannerProcessor import BHScannerProcessor
+import numpy as np
+import napari
 import time
 
-bhScanner = VirtualBHScanner(name='BHScanner')
-bhScanner.connect()
-bhScanner.setParameter('threadingNow', True)
+bhScanner = VirtualBHScanner()
 
-bhPro = ScannerBHProcessor(name='ScannerProcessor')
-bhPro.connect(scanner=bhScanner)
-bhPro.setParameter('threadingNow', True)
+bhPro = BHScannerProcessor()
+bhPro.connect(bhScanner)
 
-adGui  = ScannerBHGUI(viscope)
-adGui.setDevice(bhScanner,processor=bhPro)
+# generate and process data
+bhScanner.startAcquisition()
+imStack = np.zeros((5,*bhPro.rawImage.shape))
 
-cvGui  = CameraViewGUI(viscope,vWindow='new')
-cvGui.setDevice(bhPro)
+for ii in range(5):
+    print(f'acquisition {ii}')
+    time.sleep(0.1)
+    bhScanner.updateStack()
+    bhPro.processData()
+    imStack[ii,...] = bhPro.rawImage
 
-viscope.run()
-time.sleep(1)
+bhScanner.stopAcquisition()
 
-bhPro.disconnect()
-bhScanner.disconnect()
+# show data - visual check
+viewer = napari.Viewer()
+viewer.add_image(imStack, colormap='turbo')
+napari.run()
+

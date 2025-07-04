@@ -14,7 +14,7 @@ from viscope.instrument.base.baseProcessor import BaseProcessor
 from scanImaging.algorithm.signalProcessFunction import resetSignal, flagToCounter, upperEdgeSignalToFlag
 
 
-class ScannerBHProcessor(BaseProcessor):
+class BHScannerProcessor(BaseProcessor):
     ''' class to collect data from virtual scanner'''
     DEFAULT = {'name': 'ScannerProcessor',
                 'pixelTime': 90, # 
@@ -24,7 +24,7 @@ class ScannerBHProcessor(BaseProcessor):
     def __init__(self, name=None, **kwargs):
         ''' initialisation '''
 
-        if name== None: name= ScannerBHProcessor.DEFAULT['name']
+        if name== None: name= BHScannerProcessor.DEFAULT['name']
         super().__init__(name=name, **kwargs)
         
         # asynchronous Detector
@@ -92,15 +92,16 @@ class ScannerBHProcessor(BaseProcessor):
 
         #print(f"processing data from {self.DEFAULT['name']}")
 
+        stack = self.scanner.getStack()
         # calculate total macroTime
         self.macroTime = (self.lastMacroTime
-                            + self.scanner.stack[:,2] -self.lastMacroSawValue
-                            + np.cumsum(self.scanner.stack[:,0]*2**12)
+                            + stack[:,2] -self.lastMacroSawValue
+                            + np.cumsum(stack[:,0]*2**12)
                         )
-        self.lastMacroSawValue = self.scanner.stack[-1,2]
+        self.lastMacroSawValue = stack[-1,2]
 
         # reset macroTime on each new line
-        self.macroTime,_ = resetSignal(self.macroTime, self.scanner.stack[:,1].astype(bool))
+        self.macroTime,_ = resetSignal(self.macroTime, stack[:,1].astype(bool))
         self.lastMacroTime = self.macroTime[-1]
 
         # calculate x position
@@ -110,7 +111,7 @@ class ScannerBHProcessor(BaseProcessor):
         #np.clip(self.xIdx,0,self.rawImage.shape[1]-1,out=self.xIdx)
 
         # calculate y position
-        self.yIdx = self.lastYIdx + np.cumsum(self.scanner.stack[:,1]).astype(int)
+        self.yIdx = self.lastYIdx + np.cumsum(stack[:,1]).astype(int)
   
         # calculate page position
         returnSignal = (self.macroTime > 
@@ -135,8 +136,8 @@ class ScannerBHProcessor(BaseProcessor):
 
 
         # remove flags from data
-        #print(f'scanner stack 0 \n {self.scanner.stack[:,0]==0}')
-        arrivedPhotons = ((self.scanner.stack[:,0]==0) & (self.scanner.stack[:,1]==0))
+        #print(f'stack 0 \n {stack[:,0]==0}')
+        arrivedPhotons = ((stack[:,0]==0) & (stack[:,1]==0))
         self.yIdx = self.yIdx[arrivedPhotons]
         self.xIdx = self.xIdx[arrivedPhotons]
 

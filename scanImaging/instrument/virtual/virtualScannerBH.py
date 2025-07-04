@@ -172,11 +172,19 @@ class VirtualBHScanner(BaseADetector):
         self.lastStackTime = currentTime
         return virtualStack
         
-    def getStack(self):
+    def updateStack(self):
         ''' get data from the stack'''        
-        #print(f'getStack from {self.DEFAULT["name"]}')
-        self.stack = self._calculateStack()
-        #self.stack = np.array([10,10,10])
+
+        res = self._calculateStack()
+        if self.stack is None:
+            self.stack = res
+        else:
+            try:
+                self.stack = np.vstack([self.stack,res])
+            except:
+                print('error in updateStack np.vstack')
+                print(f'_calculated stack shape {np.shape(res)}')
+
 
         return self.stack
 
