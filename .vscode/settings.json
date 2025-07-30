@@ -6,5 +6,9 @@
     "python.testing.pytestEnabled": true,
     "python-envs.defaultEnvManager": "ms-python.python:conda",
     "python-envs.defaultPackageManager": "ms-python.python:conda",
-    "python-envs.pythonProjects": []
+    "python-envs.pythonProjects": [],
+    "python.languageServer": "Pylance",
+    "python.analysis.extraPaths": [
+        "G:/office/work/git/viscope"
+    ],
 }
