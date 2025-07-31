@@ -3,7 +3,6 @@
 
 import numpy as np
 import time
-
 from viscope.instrument.base.baseADetector import BaseADetector
 from viscope.virtualSystem.component.sample import Sample
 
@@ -122,6 +121,10 @@ class VirtualBHScanner(BaseADetector):
             pixelIdx = (scanRange//int(self.pixelTime/self.signalTime)).astype(int)
             threshold = 0.5
             
+            # no new data
+            if pixelIdx.size == 0:
+                return None
+
             # detect overflow 
             if pixelIdx[-1]>2*(np.prod(self.scanSize)-1):
                 self.overflowFlag = True
@@ -174,17 +177,15 @@ class VirtualBHScanner(BaseADetector):
         
     def updateStack(self):
         ''' get data from the stack'''        
-
         res = self._calculateStack()
-        if self.stack is None:
+        
+        if res is None:
+            return self.stack
+        
+        if self.isEmptyStack():
             self.stack = res
         else:
-            try:
-                self.stack = np.vstack([self.stack,res])
-            except:
-                print('error in updateStack np.vstack')
-                print(f'_calculated stack shape {np.shape(res)}')
-
+            self.stack = np.vstack([self.stack,res])
 
         return self.stack
 

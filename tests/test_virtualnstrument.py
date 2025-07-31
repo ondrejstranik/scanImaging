@@ -55,18 +55,27 @@ def test_VirtualScanner():
     scanner.disconnect()
     #%%
 
-
+@pytest.mark.GUI
 def test_VirtualScannerBH():
     ''' check the data are generated'''
+
     from scanImaging.instrument.virtual.virtualScannerBH import VirtualBHScanner
     import time
-    import matplotlib.pyplot as plt
+    try:
+        import matplotlib.pyplot as plt
+    except ModuleNotFoundError:
+        print('to run the test install matplotlib')
+        assert True
+
 
     bhScanner = VirtualBHScanner()
     bhScanner.connect()
     bhScanner.setParameter('threadingNow',True)    
     bhScanner.startAcquisition()
-    time.sleep(0.1)
+    
+    while bhScanner.isEmptyStack():
+        #print('waiting')
+        time.sleep(0.1)
    
     myStack = bhScanner.getStack()
 
@@ -84,6 +93,7 @@ def test_VirtualScannerBH():
 
     plt.show()
 
+@pytest.mark.GUI
 def test_ScannerBHProcessor():
     ''' check the scanner data are processed '''
     from scanImaging.instrument.virtual.virtualScannerBH import VirtualBHScanner
@@ -116,7 +126,7 @@ def test_ScannerBHProcessor():
     napari.run()
 
 
-
+@pytest.mark.GUI
 def test_ScannerBHProcessor2():
     ''' check the scanner data are processed live '''
     from scanImaging.instrument.virtual.virtualScannerBH import VirtualBHScanner
