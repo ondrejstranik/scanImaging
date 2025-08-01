@@ -64,8 +64,8 @@ def test_VirtualScannerBH():
     try:
         import matplotlib.pyplot as plt
     except ModuleNotFoundError:
-        print('to run the test install matplotlib')
-        assert True
+        print('to run this test install matplotlib')
+        assert False
 
 
     bhScanner = VirtualBHScanner()

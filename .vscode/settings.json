@@ -9,6 +9,7 @@
     "python-envs.pythonProjects": [],
     "python.languageServer": "Pylance",
     "python.analysis.extraPaths": [
-        "G:/office/work/git/viscope"
+        "G:/office/work/git/viscope",
+        "C:/Users/localxueweikai/Documents/GitHub/viscope"
     ],
 }

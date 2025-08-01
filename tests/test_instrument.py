@@ -13,6 +13,7 @@ def test_bHScanner():
     i = 0
     while i<30: 
         time.sleep(0.01)
+        bhScanner.updateStack()
         myStack = bhScanner.getStack()
         print(myStack)
         i += 1

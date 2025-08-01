@@ -72,30 +72,40 @@ class BHScanner(BaseADetector):
         super().stopAcquisition()
         spcm.stop_measurement(self.modeNumber)
         
-        fullPath = Path(scanImaging.__file__).parent / 'DATA' / self.filename.format(self.saveIdx)
-        np.save(fullPath,np.concatenate(self.dataToSave).view(np.uint32))
-        self.saveIdx +=1
+        # TODO: do proper data saving
+        #fullPath = Path(scanImaging.__file__).parent / 'DATA' / self.filename.format(self.saveIdx)
+        #np.save(fullPath,np.concatenate(self.dataToSave).view(np.uint32))
+        #self.saveIdx +=1
 
-    def getStack(self):
+    def updateStack(self):
         ''' get data from the stack'''        
         data = []  # Collect arrays of data into a list.
         while True:
             buffer =  spcm.read_fifo_to_array(self.modeNumber, self.bufferSize)
             if len(buffer):
                 data.append(buffer)
-                self.dataToSave.append(buffer)
+                # TODO: do proper data saving
+                #self.dataToSave.append(buffer)
                 if len(buffer) < self.bufferSize: # Buffer is not full
                     break
             else:
                 break # Buffer is zero return
 
-        # TODO: move this to the processor 
-        # convert the stream to stack further process by bhScannerProcessor
         if len(data) > 0:
+            # TODO: move this to the processor 
+            # convert the stream to stack further process by bhScannerProcessor
             self.bhData.streamToData(np.concatenate(data).view(np.uint32))
-            self.stack = np.vstack([self.bhData.newMacroTimeFlag,self.bhData.newLineFlag,self.bhData.macroTime]).T
-        else:
-            self.stack = None
+
+            if np.any(self.bhData.stackOverflowFlag):
+                print('stack over flow')
+
+
+            res = np.vstack([self.bhData.newMacroTimeFlag,self.bhData.newLineFlag,self.bhData.macroTime]).T
+
+            if self.isEmptyStack():
+                self.stack = res
+            else:
+                self.stack = np.vstack([self.stack,res])
 
         return self.stack
 

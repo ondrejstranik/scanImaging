@@ -18,7 +18,7 @@ class BHScannerProcessor(BaseProcessor):
     ''' class to collect data from virtual scanner'''
     DEFAULT = {'name': 'ScannerProcessor',
                 'pixelTime': 90, # 
-                'newPageTimeFlag': 3 # threshold for new page in the macroTime 
+                'newPageTimeFlag': 5 # threshold for new page in the macroTime 
                 }
 
     def __init__(self, name=None, **kwargs):
@@ -35,6 +35,7 @@ class BHScannerProcessor(BaseProcessor):
 
         # data
         self.rawImage = None
+        self.wholeImage = None
         self.xIdx = 0 # quick axis
         self.yIdx = 0 # slow axis
         self.lastYIdx = -1 # at the start of scanning the y-flag is given
@@ -47,7 +48,7 @@ class BHScannerProcessor(BaseProcessor):
 
 
     def resetCounter(self):
-        ''' reset value of all counting, indxing parameter. it is called when new scan start'''
+        ''' reset value of all counting, indexing parameter. it is called when new scan start'''
 
         self.rawImage = 0*self.rawImage
         self.xIdx = 0 # quick axis
@@ -78,6 +79,7 @@ class BHScannerProcessor(BaseProcessor):
             self.scanner = value
             self.flagToProcess = self.scanner.flagLoop
             self.rawImage = np.zeros(self.scanner.imageSize)
+            self.wholeImage = 0*self.rawImage
 
     def getParameter(self,name):
         ''' get parameter of the camera '''
@@ -124,6 +126,8 @@ class BHScannerProcessor(BaseProcessor):
         
         self.yIdx, _ = resetSignal(self.yIdx,newPageFlag, resetValue = -1)
         
+        recordingPageIdx = self.lastPageIdx
+        
         self.lastPageIdx = self.pageIdx[-1]
         self.lastYIdx = self.yIdx[-1]
 
@@ -140,6 +144,7 @@ class BHScannerProcessor(BaseProcessor):
         arrivedPhotons = ((stack[:,0]==0) & (stack[:,1]==0))
         self.yIdx = self.yIdx[arrivedPhotons]
         self.xIdx = self.xIdx[arrivedPhotons]
+        self.pageIdx = self.pageIdx[arrivedPhotons]
 
         #remove photons which are outside image size
         insideImage = ((self.yIdx >= 0) & (self.yIdx <= self.rawImage.shape[1]-1)
@@ -149,8 +154,29 @@ class BHScannerProcessor(BaseProcessor):
 
 
         # add the photons to the image
-        #self.rawImage = 0*self.rawImage
-        np.add.at(self.rawImage,(self.yIdx,self.xIdx),1)
+        # continuos viewing
+        if True:
+            _rawImage = 0*self.rawImage
+            np.add.at(_rawImage,(self.yIdx,self.xIdx),1)
+            self.rawImage[_rawImage>0] =0
+            self.rawImage = self.rawImage + _rawImage
+        # whole image viewing
+        else:
+            if recordingPageIdx==self.lastPageIdx:
+                np.add.at(self.wholeImage,(self.yIdx,self.xIdx),1)
+            else:
+                # full image recorded
+                if np.any(self.yIdx== self.scanner.imageSize[0]-1):
+                    _idx = self.pageIdx==recordingPageIdx
+                    np.add.at(self.wholeImage,(self.yIdx[_idx],self.xIdx[_idx]),1)
+                    self.rawImage = 1*self.wholeImage
+                    self.wholeImage = 0*self.rawImage
+                else:
+                    _idx = self.pageIdx==self.lastPageIdx
+                    self.wholeImage = 0*self.rawImage
+                    np.add.at(self.wholeImage,(self.yIdx[_idx],self.xIdx[_idx]),1)
+
+
 
 
 
