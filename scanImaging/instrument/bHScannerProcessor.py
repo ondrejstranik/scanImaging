@@ -35,7 +35,7 @@ class BHScannerProcessor(BaseProcessor):
 
         # data
         self.rawImage = None
-        self.wholeImage = None
+        self.dataCube = None
         self.xIdx = 0 # quick axis
         self.yIdx = 0 # slow axis
         self.lastYIdx = -1 # at the start of scanning the y-flag is given
@@ -79,7 +79,8 @@ class BHScannerProcessor(BaseProcessor):
             self.scanner = value
             self.flagToProcess = self.scanner.flagLoop
             self.rawImage = np.zeros(self.scanner.imageSize)
-            self.wholeImage = 0*self.rawImage
+            # TODO: set properly the dimensions, type
+            self.dataCube = np.zeros((10,3,*self.scanner.imageSize), dtype=int)
 
     def getParameter(self,name):
         ''' get parameter of the camera '''
@@ -155,26 +156,28 @@ class BHScannerProcessor(BaseProcessor):
 
         # add the photons to the image
         # continuos viewing
-        if True:
-            _rawImage = 0*self.rawImage
-            np.add.at(_rawImage,(self.yIdx,self.xIdx),1)
-            self.rawImage[_rawImage>0] =0
-            self.rawImage = self.rawImage + _rawImage
-        # whole image viewing
+        _rawImage = 0*self.rawImage
+        np.add.at(_rawImage,(self.yIdx,self.xIdx),1)
+        self.rawImage[_rawImage>0] =0
+        self.rawImage = self.rawImage + _rawImage
+
+        # add photons to the whole dataCube
+        # TODO: add proper channel and time
+        _time = np.random.randint(0,9,len(self.yIdx))
+        _channel = np.random.randint(0,3,len(self.yIdx))
+        if recordingPageIdx==self.lastPageIdx:
+            np.add.at(self.dataCube,(_time,_channel,self.yIdx,self.xIdx),1)
         else:
-            if recordingPageIdx==self.lastPageIdx:
-                np.add.at(self.wholeImage,(self.yIdx,self.xIdx),1)
-            else:
-                # full image recorded
-                if np.any(self.yIdx== self.scanner.imageSize[0]-1):
-                    _idx = self.pageIdx==recordingPageIdx
-                    np.add.at(self.wholeImage,(self.yIdx[_idx],self.xIdx[_idx]),1)
-                    self.rawImage = 1*self.wholeImage
-                    self.wholeImage = 0*self.rawImage
-                else:
-                    _idx = self.pageIdx==self.lastPageIdx
-                    self.wholeImage = 0*self.rawImage
-                    np.add.at(self.wholeImage,(self.yIdx[_idx],self.xIdx[_idx]),1)
+            # full image recorded
+            if np.any(self.yIdx== self.scanner.imageSize[0]-1):
+                _idx = self.pageIdx==recordingPageIdx
+                np.add.at(self.dataCube,(_time,_channel,self.yIdx,self.xIdx),1)
+                self.flagFullImage = True
+                print('full image recorded')
+            else: # not full image was recorded
+                _idx = self.pageIdx==self.lastPageIdx
+                self.dataCube = 0*self.dataCube
+                np.add.at(self.dataCube,(_time,_channel,self.yIdx,self.xIdx),1)
 
 
 

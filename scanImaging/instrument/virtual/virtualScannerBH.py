@@ -165,7 +165,7 @@ class VirtualBHScanner(BaseADetector):
             # generate the signal
             # remove the events without photons (but keep the flag event)
             validSignal = ((_virtualPhoton ==1) | tMacroFlag | newLineFlag)
-            print(f'size of stack {np.sum(validSignal*1)}')
+            #print(f'size of stack {np.sum(validSignal*1)}')
 
             virtualStack = np.vstack([tMacroFlag[validSignal],
                                       newLineFlag[validSignal],

@@ -131,6 +131,7 @@ def test_ScannerBHProcessor2():
     ''' check the scanner data are processed live '''
     from scanImaging.instrument.virtual.virtualScannerBH import VirtualBHScanner
     from scanImaging.instrument.bHScannerProcessor import BHScannerProcessor
+    from scanImaging.gui.flimViewerGUI import FlimViewerGUI
     from viscope.main import viscope
     from scanImaging.gui.scannerBHGUI import ScannerBHGUI
     from viscope.gui.cameraViewGUI import CameraViewGUI
@@ -146,6 +147,9 @@ def test_ScannerBHProcessor2():
 
     adGui  = ScannerBHGUI(viscope)
     adGui.setDevice(bhScanner,processor=bhPro)
+
+    fvGui  = FlimViewerGUI(viscope,vWindow='new')
+    fvGui.setDevice(bhPro)
 
     cvGui  = CameraViewGUI(viscope,vWindow='new')
     cvGui.setDevice(bhPro)

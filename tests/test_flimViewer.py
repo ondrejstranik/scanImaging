@@ -11,7 +11,7 @@ def test_FlimViewer():
     from qtpy.QtWidgets import QApplication, QMainWindow
     import numpy as np
 
-    flimData = FlimData(np.random.randint(0,10,size=(10,3,50,50)),[0,30])
+    flimData = FlimData(np.random.randint(0,10,size=(10,3,512,512)),[0,30])
     flimData.processData()
 
     app = QApplication([])

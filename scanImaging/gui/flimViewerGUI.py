@@ -5,7 +5,6 @@ package to show processed flim data
 #from spectralCamera.gui.xywViewerGUI import XYWViewerGui
 from viscope.gui.baseGUI import BaseGUI
 from scanImaging.gui.flimViewer.flimViewer import FlimViewer
-from plim.gui.spectralViewer.plasmonViewer import PlasmonViewer
 from qtpy.QtCore import Signal
 
 
@@ -31,22 +30,17 @@ class FlimViewerGUI(BaseGUI):
 
     def setDevice(self,device):
         super().setDevice(device)
-        # connect data container
-        self.plasmonViewer.pF = self.device.pF
-        self.plasmonViewer.spotSpectra = self.device.spotSpectra
         # connect signals
         self.device.worker.yielded.connect(self.guiUpdateTimed)
 
     def updateGui(self):
         ''' update the data in gui '''
-        # napari
-        #self.plasmonViewer.setWavelength(self.device.wavelength)
-        self.plasmonViewer.xywImage = self.device.spotSpectra.wxyImage
-        self.plasmonViewer.wavelength = self.device.pF.wavelength
-        self.plasmonViewer.redraw()
-
-
-
+        
+        if self.device.flagFullImage:
+            print('updating flimViewerGUI')
+            self.flimViewer.flimData.setData(self.device.dataCube)
+            self.flimViewer.updateViewer()
+            self.device.flagFullImage = False
 
 if __name__ == "__main__":
     pass
