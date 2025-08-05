@@ -19,7 +19,7 @@ class BHScannerProcessor(BaseProcessor):
     DEFAULT = {'name': 'ScannerProcessor',
                 'pixelTime': 90, # dwell time on one pixel
                 'newPageTimeFlag': 5, # threshold for new page in the macroTime
-                'numberOfAccumulation': 3 # number of images to accumulate
+                'numberOfAccumulation': 10 # number of images to accumulate
                 }
 
     def __init__(self, name=None, **kwargs):
@@ -147,6 +147,7 @@ class BHScannerProcessor(BaseProcessor):
             print(f'new page flag generated: {np.sum(newPageFlag)}')
             print(f'new page index {np.max(self.pageIdx)}')
 
+        allEventYIdx = np.copy(self.yIdx)
 
         # remove flags from data
         #print(f'stack 0 \n {stack[:,0]==0}')
@@ -156,10 +157,11 @@ class BHScannerProcessor(BaseProcessor):
         self.pageIdx = self.pageIdx[arrivedPhotons]
 
         #remove photons which are outside image size
-        insideImage = ((self.yIdx >= 0) & (self.yIdx <= self.rawImage.shape[1]-1)
-                        &(self.xIdx >= 0) & (self.xIdx <= self.rawImage.shape[0]-1))
+        insideImage = ((self.yIdx >= 0) & (self.yIdx <= self.rawImage.shape[0]-1)
+                        &(self.xIdx >= 0) & (self.xIdx <= self.rawImage.shape[1]-1))
         self.yIdx = self.yIdx[insideImage]
-        self.xIdx = self.xIdx[insideImage]       
+        self.xIdx = self.xIdx[insideImage]
+        self.pageIdx = self.pageIdx[insideImage]       
 
 
         # add the photons to the image
@@ -177,7 +179,7 @@ class BHScannerProcessor(BaseProcessor):
             np.add.at(self.dataCube,(_time,_channel,self.yIdx,self.xIdx),1)
         else:
             # full image recorded
-            if np.any(self.yIdx== self.scanner.imageSize[0]-1):
+            if np.any(allEventYIdx== self.scanner.imageSize[0]-1):
                 _idx = self.pageIdx<=self.recordingPageIdx
                 np.add.at(self.dataCube,(_time[_idx],_channel[_idx],
                                          self.yIdx[_idx],self.xIdx[_idx]),1)
@@ -185,15 +187,26 @@ class BHScannerProcessor(BaseProcessor):
                     self.dataCubeFinished = np.copy(self.dataCube)
                 else:
                     self.dataCubeFinished = self.dataCubeFinished + self.dataCube
-                self.accumulationIdx += 1 
+                
+                self.accumulationIdx += 1
+                self.flagFullImage = True
+                print(f'full image recorded: {self.accumulationIdx} out of {self.numberOfAccumulation}')
+                
+                # add to the data cube data which are on new pageIdx
+                _idx = self.pageIdx>self.recordingPageIdx
+                np.add.at(self.dataCube,(_time[_idx],_channel[_idx],
+                                         self.yIdx[_idx],self.xIdx[_idx]),1)
+
+
                 if self.accumulationIdx == self.numberOfAccumulation:
                     self.accumulationIdx = 0
                     self.flagFullAccumulation = True
+                    print(f'full stack of images recorded')
                 
-                self.flagFullImage = True
                 self.recordingPageIdx = self.lastPageIdx
-                print(f'full image recorded')
+
             else: # not full image was recorded
+                print(f'not full image recorded. yIdx max {np.max(allEventYIdx)}')
                 _idx = self.pageIdx==self.lastPageIdx
                 self.recordingPageIdx = self.lastPageIdx
                 self.dataCube = 0*self.dataCube
