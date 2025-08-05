@@ -53,7 +53,7 @@ class ScannerBHGUI(BaseGUI):
 
     def updateGui(self):
         ''' update the data in gui '''
-        if (self.processor.flagFullImage and 
+        if (self.processor.flagFullAccumulation and 
             not self.parameterADetectorGui.continuous.value):
              #self.device.stopAcquisition()
              self.parameterADetectorGui.acquisition.value = False

@@ -17,8 +17,9 @@ from scanImaging.algorithm.signalProcessFunction import resetSignal, flagToCount
 class BHScannerProcessor(BaseProcessor):
     ''' class to collect data from virtual scanner'''
     DEFAULT = {'name': 'ScannerProcessor',
-                'pixelTime': 90, # 
-                'newPageTimeFlag': 5 # threshold for new page in the macroTime 
+                'pixelTime': 90, # dwell time on one pixel
+                'newPageTimeFlag': 5, # threshold for new page in the macroTime
+                'numberOfAccumulation': 3 # number of images to accumulate
                 }
 
     def __init__(self, name=None, **kwargs):
@@ -32,34 +33,44 @@ class BHScannerProcessor(BaseProcessor):
 
         # parameters for calculation
         self.pixelTime = self.DEFAULT['pixelTime'] # dwell time on one pixel
+        self.numberOfAccumulation = self.DEFAULT['numberOfAccumulation']
 
         # data
-        self.rawImage = None
-        self.dataCube = None
+        self.rawImage = None  # 2D image - preview currently acquiring
+        self.dataCube = None # 4D image - currently acquiring
+        self.dataCubeFinished = None # 4D image - acquired full image
+        self.accumulationIdx = 0 # index of accumulation
         self.xIdx = 0 # quick axis
         self.yIdx = 0 # slow axis
         self.lastYIdx = -1 # at the start of scanning the y-flag is given
         self.pageIdx = 0
         self.lastPageIdx = 0
+        self.recordingPageIdx = 0
         self.macroTime = 0
         self.lastMacroSawValue = 0
         self.lastMacroTime = 0
         self.flagFullImage = False # indicate, when whole image is recorded
+        self.flagFullAccumulation = False # indicate, when accumulated image is recorded
 
 
     def resetCounter(self):
         ''' reset value of all counting, indexing parameter. it is called when new scan start'''
 
         self.rawImage = 0*self.rawImage
+        self.dataCube = 0*self.dataCube
+        self.dataCubeFinished = 0*self.dataCubeFinished
+        self.accumulationIdx = 0
         self.xIdx = 0 # quick axis
         self.yIdx = 0 # slow axis
         self.lastYIdx = -1 # at the start of scanning the y-flag is given
         self.pageIdx = 0
         self.lastPageIdx = 0
+        self.recordingPageIdx = 0
         self.macroTime = 0
         self.lastMacroSawValue = 0
         self.lastMacroTime = 0
         self.flagFullImage = False # indicate, when whole image is recorded
+        self.flagFullAccumulation = False # indicate, when accumulated image is recorded
 
     def connect(self,scanner=None):
         ''' connect data processor with aDetector'''
@@ -81,6 +92,7 @@ class BHScannerProcessor(BaseProcessor):
             self.rawImage = np.zeros(self.scanner.imageSize)
             # TODO: set properly the dimensions, type
             self.dataCube = np.zeros((10,3,*self.scanner.imageSize), dtype=int)
+            self.dataCubeFinished = np.zeros((10,3,*self.scanner.imageSize), dtype=int)
 
     def getParameter(self,name):
         ''' get parameter of the camera '''
@@ -127,15 +139,11 @@ class BHScannerProcessor(BaseProcessor):
         
         self.yIdx, _ = resetSignal(self.yIdx,newPageFlag, resetValue = -1)
         
-        recordingPageIdx = self.lastPageIdx
-        
         self.lastPageIdx = self.pageIdx[-1]
         self.lastYIdx = self.yIdx[-1]
 
-        # TODO: take into account if YIdx was full
-        # check if full image is recorded
+        # info for debugging
         if np.any(returnSignal):
-            self.flagFullImage = True
             print(f'new page flag generated: {np.sum(newPageFlag)}')
             print(f'new page index {np.max(self.pageIdx)}')
 
@@ -165,19 +173,32 @@ class BHScannerProcessor(BaseProcessor):
         # TODO: add proper channel and time
         _time = np.random.randint(0,9,len(self.yIdx))
         _channel = np.random.randint(0,3,len(self.yIdx))
-        if recordingPageIdx==self.lastPageIdx:
+        if self.recordingPageIdx>=self.lastPageIdx:
             np.add.at(self.dataCube,(_time,_channel,self.yIdx,self.xIdx),1)
         else:
             # full image recorded
             if np.any(self.yIdx== self.scanner.imageSize[0]-1):
-                _idx = self.pageIdx==recordingPageIdx
-                np.add.at(self.dataCube,(_time,_channel,self.yIdx,self.xIdx),1)
+                _idx = self.pageIdx<=self.recordingPageIdx
+                np.add.at(self.dataCube,(_time[_idx],_channel[_idx],
+                                         self.yIdx[_idx],self.xIdx[_idx]),1)
+                if self.accumulationIdx == 0:
+                    self.dataCubeFinished = np.copy(self.dataCube)
+                else:
+                    self.dataCubeFinished = self.dataCubeFinished + self.dataCube
+                self.accumulationIdx += 1 
+                if self.accumulationIdx == self.numberOfAccumulation:
+                    self.accumulationIdx = 0
+                    self.flagFullAccumulation = True
+                
                 self.flagFullImage = True
-                print('full image recorded')
+                self.recordingPageIdx = self.lastPageIdx
+                print(f'full image recorded')
             else: # not full image was recorded
                 _idx = self.pageIdx==self.lastPageIdx
+                self.recordingPageIdx = self.lastPageIdx
                 self.dataCube = 0*self.dataCube
-                np.add.at(self.dataCube,(_time,_channel,self.yIdx,self.xIdx),1)
+                np.add.at(self.dataCube,(_time[_idx],_channel[_idx],
+                                         self.yIdx[_idx],self.xIdx[_idx]),1)
 
 
 
