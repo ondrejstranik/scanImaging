@@ -26,6 +26,7 @@ class ScannerBHGUI(BaseGUI):
         @magicgui(auto_call=True)
         def parameterADetectorGui(
             acquisition = False,
+            continuous = True,
             ):
             if acquisition: 
                  self.processor.resetCounter()
@@ -47,6 +48,16 @@ class ScannerBHGUI(BaseGUI):
         self.parameterADetectorGui.acquisition.value = self.device.acquiring
         self.dw.setWindowTitle(self.device.name)
 
+        # connect the signals
+        self.processor.worker.yielded.connect(self.guiUpdateTimed)
+
+    def updateGui(self):
+        ''' update the data in gui '''
+        if (self.processor.flagFullImage and 
+            not self.parameterADetectorGui.continuous.value):
+             #self.device.stopAcquisition()
+             self.parameterADetectorGui.acquisition.value = False
+             
 if __name__ == "__main__":
         pass
 

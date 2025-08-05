@@ -148,11 +148,11 @@ def test_ScannerBHProcessor2():
     adGui  = ScannerBHGUI(viscope)
     adGui.setDevice(bhScanner,processor=bhPro)
 
-    fvGui  = FlimViewerGUI(viscope,vWindow='new')
-    fvGui.setDevice(bhPro)
-
     cvGui  = CameraViewGUI(viscope,vWindow='new')
     cvGui.setDevice(bhPro)
+
+    fvGui  = FlimViewerGUI(viscope,vWindow='new')
+    fvGui.setDevice(bhPro)
 
     viscope.run()
     bhPro.disconnect()
