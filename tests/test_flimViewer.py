@@ -1,6 +1,7 @@
 ''' test spectral viewer '''
 
 import pytest
+import napari
 
 @pytest.mark.GUI
 def test_FlimViewer():
@@ -14,10 +15,12 @@ def test_FlimViewer():
     flimData.processData()
 
     app = QApplication([])
-    fV = FlimViewer(flimData=flimData)
-
     window =QMainWindow()
+    
+    fV = FlimViewer(flimData=flimData,show=False)
+
     window.setCentralWidget(fV.viewer.window._qt_window)
     window.show()
     app.exec()
+
 

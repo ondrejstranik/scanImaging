@@ -10,6 +10,7 @@
     "python.languageServer": "Pylance",
     "python.analysis.extraPaths": [
         "G:/office/work/git/viscope",
-        "C:/Users/localxueweikai/Documents/GitHub/viscope"
+        "C:/Users/localxueweikai/Documents/GitHub/viscope",
+        "C:/Users/Ondra/Documents/GitHub/viscope"
     ],
 }

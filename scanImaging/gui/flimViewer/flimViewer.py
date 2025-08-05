@@ -107,11 +107,20 @@ class FlimViewer(QWidget):
             print('error occurred in FlimViewer - drawTimeGraph')
             traceback.print_exc()
 
+    def updateImage(self):
+        ''' update image in viewer'''
+        self.imageLayer.data = self.flimData.getImage()
+        self.processedImageLayer.data = self.flimData.getImage(processed=True)
+
+    def updateViewer(self):
+        ''' update images/graphs in the viewer'''
+        self.updateImage()
+        self.drawTimeGraph()
 
     def setData(self, flimData):
         ''' set the data and update image '''
         self.flimData = flimData
-        self.drawTimeGraph()
+        self.updateViewer()
 
 if __name__ == "__main__":
     pass
