@@ -179,7 +179,9 @@ class BHScannerProcessor(BaseProcessor):
             np.add.at(self.dataCube,(_time,_channel,self.yIdx,self.xIdx),1)
         else:
             # full image recorded
-            if np.any(allEventYIdx== self.scanner.imageSize[0]-1):
+            if (np.any(allEventYIdx== self.scanner.imageSize[0]-1)
+                ): # TODO: this is source of error --> correct it!
+                 # or (allEventYIdx[0]== -1)):
                 _idx = self.pageIdx<=self.recordingPageIdx
                 np.add.at(self.dataCube,(_time[_idx],_channel[_idx],
                                          self.yIdx[_idx],self.xIdx[_idx]),1)
@@ -207,6 +209,7 @@ class BHScannerProcessor(BaseProcessor):
 
             else: # not full image was recorded
                 print(f'not full image recorded. yIdx max {np.max(allEventYIdx)}')
+                print(f'yIdx {allEventYIdx}')
                 _idx = self.pageIdx==self.lastPageIdx
                 self.recordingPageIdx = self.lastPageIdx
                 self.dataCube = 0*self.dataCube
