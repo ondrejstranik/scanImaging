@@ -17,6 +17,7 @@ class ScannerBHGUI(BaseGUI):
 
         # widget
         self.parameterADetectorGui = None
+        self.parameter2ADetectorGui = None
 
         # prepare the gui of the class
         ScannerBHGUI.__setWidget(self)        
@@ -25,18 +26,29 @@ class ScannerBHGUI(BaseGUI):
         ''' prepare the gui '''
         @magicgui(auto_call=True)
         def parameterADetectorGui(
-            acquisition = False,
-            continuous = True,
+            acquisition = False
             ):
             if acquisition: 
                  self.processor.resetCounter()
                  self.device.startAcquisition()
             else:
                  self.device.stopAcquisition()
+        
+        @magicgui(auto_call=True)
+        def parameter2ADetectorGui(
+            continuous = True,
+            numberOfAccumulation = 5
+            ):
+            self.processor.numberOfAccumulation = numberOfAccumulation
+
 
         # add widget parameterCameraGui 
         self.parameterADetectorGui = parameterADetectorGui
+        self.parameter2ADetectorGui = parameter2ADetectorGui
+
         self.dw =self.vWindow.addParameterGui(self.parameterADetectorGui,name=self.DEFAULT['nameGUI'])
+        self.dw =self.vWindow.addParameterGui(self.parameter2ADetectorGui,name=self.DEFAULT['nameGUI']+'_2')
+
 
     def setDevice(self,device,processor=None):
         ''' set the laser '''
@@ -46,6 +58,8 @@ class ScannerBHGUI(BaseGUI):
 
         # set gui parameters
         self.parameterADetectorGui.acquisition.value = self.device.acquiring
+        self.parameter2ADetectorGui.numberOfAccumulation.value = self.processor.numberOfAccumulation
+
         self.dw.setWindowTitle(self.device.name)
 
         # connect the signals
@@ -54,7 +68,7 @@ class ScannerBHGUI(BaseGUI):
     def updateGui(self):
         ''' update the data in gui '''
         if (self.processor.flagFullAccumulation and 
-            not self.parameterADetectorGui.continuous.value):
+            not self.parameter2ADetectorGui.continuous.value):
              #self.device.stopAcquisition()
              self.parameterADetectorGui.acquisition.value = False
              

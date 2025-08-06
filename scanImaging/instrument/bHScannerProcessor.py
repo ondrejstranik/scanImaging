@@ -43,6 +43,7 @@ class BHScannerProcessor(BaseProcessor):
         self.xIdx = 0 # quick axis
         self.yIdx = 0 # slow axis
         self.lastYIdx = -1 # at the start of scanning the y-flag is given
+        self.maxYIdx = -1 # maximal y-line scanned. reset to -1 after new page
         self.pageIdx = 0
         self.lastPageIdx = 0
         self.recordingPageIdx = 0
@@ -63,6 +64,7 @@ class BHScannerProcessor(BaseProcessor):
         self.xIdx = 0 # quick axis
         self.yIdx = 0 # slow axis
         self.lastYIdx = -1 # at the start of scanning the y-flag is given
+        self.maxYIdx = -1 # maximal y-line scanned. reset to -1 after new page        
         self.pageIdx = 0
         self.lastPageIdx = 0
         self.recordingPageIdx = 0
@@ -145,9 +147,13 @@ class BHScannerProcessor(BaseProcessor):
         # info for debugging
         if np.any(returnSignal):
             print(f'new page flag generated: {np.sum(newPageFlag)}')
-            print(f'new page index {np.max(self.pageIdx)}')
+            print(f'max page index {np.max(self.pageIdx)}')
+            print(f'last page index {self.lastPageIdx}')
+
 
         allEventYIdx = np.copy(self.yIdx)
+
+        self.maxYIdx  = np.max((np.max(self.yIdx),self.maxYIdx))
 
         # remove flags from data
         #print(f'stack 0 \n {stack[:,0]==0}')
@@ -175,13 +181,13 @@ class BHScannerProcessor(BaseProcessor):
         # TODO: add proper channel and time
         _time = np.random.randint(0,9,len(self.yIdx))
         _channel = np.random.randint(0,3,len(self.yIdx))
+        
         if self.recordingPageIdx>=self.lastPageIdx:
             np.add.at(self.dataCube,(_time,_channel,self.yIdx,self.xIdx),1)
+            #print(f'page recording. yIdx max {self.maxYIdx}')
         else:
             # full image recorded
-            if (np.any(allEventYIdx== self.scanner.imageSize[0]-1)
-                ): # TODO: this is source of error --> correct it!
-                 # or (allEventYIdx[0]== -1)):
+            if (self.maxYIdx == self.scanner.imageSize[0]-1):
                 _idx = self.pageIdx<=self.recordingPageIdx
                 np.add.at(self.dataCube,(_time[_idx],_channel[_idx],
                                          self.yIdx[_idx],self.xIdx[_idx]),1)
@@ -192,6 +198,9 @@ class BHScannerProcessor(BaseProcessor):
                 
                 self.accumulationIdx += 1
                 self.flagFullImage = True
+
+                print(f'yIdx max {self.maxYIdx}')
+                print(f'yIdx {allEventYIdx}')
                 print(f'full image recorded: {self.accumulationIdx} out of {self.numberOfAccumulation}')
                 
                 # add to the data cube data which are on new pageIdx
@@ -208,7 +217,7 @@ class BHScannerProcessor(BaseProcessor):
                 self.recordingPageIdx = self.lastPageIdx
 
             else: # not full image was recorded
-                print(f'not full image recorded. yIdx max {np.max(allEventYIdx)}')
+                print(f'not full image recorded. yIdx max {self.maxYIdx}')
                 print(f'yIdx {allEventYIdx}')
                 _idx = self.pageIdx==self.lastPageIdx
                 self.recordingPageIdx = self.lastPageIdx
@@ -216,7 +225,7 @@ class BHScannerProcessor(BaseProcessor):
                 np.add.at(self.dataCube,(_time[_idx],_channel[_idx],
                                          self.yIdx[_idx],self.xIdx[_idx]),1)
 
-
+            self.maxYIdx = -1 # reset the y counter
 
 
 
