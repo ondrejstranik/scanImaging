@@ -17,9 +17,9 @@ from scanImaging.algorithm.signalProcessFunction import resetSignal, flagToCount
 class BHScannerProcessor(BaseProcessor):
     ''' class to collect data from virtual scanner'''
     DEFAULT = {'name': 'ScannerProcessor',
-                'pixelTime': 90, # dwell time on one pixel
+                'pixelTime': 90*445/512, # dwell time on one pixel
                 'newPageTimeFlag': 5, # threshold for new page in the macroTime
-                'numberOfAccumulation': 10 # number of images to accumulate
+                'numberOfAccumulation': 3 # number of images to accumulate
                 }
 
     def __init__(self, name=None, **kwargs):
@@ -187,7 +187,7 @@ class BHScannerProcessor(BaseProcessor):
             #print(f'page recording. yIdx max {self.maxYIdx}')
         else:
             # full image recorded
-            if (self.maxYIdx == self.scanner.imageSize[0]-1):
+            if (self.maxYIdx >= self.scanner.imageSize[0]-1):
                 _idx = self.pageIdx<=self.recordingPageIdx
                 np.add.at(self.dataCube,(_time[_idx],_channel[_idx],
                                          self.yIdx[_idx],self.xIdx[_idx]),1)
@@ -203,8 +203,12 @@ class BHScannerProcessor(BaseProcessor):
                 print(f'yIdx {allEventYIdx}')
                 print(f'full image recorded: {self.accumulationIdx} out of {self.numberOfAccumulation}')
                 
+                #TODO: check if _idx is set properly
                 # add to the data cube data which are on new pageIdx
-                _idx = self.pageIdx>self.recordingPageIdx
+                #_idx = self.pageIdx>self.recordingPageIdx
+                _idx = self.pageIdx==self.lastPageIdx
+
+                self.dataCube = 0*self.dataCube
                 np.add.at(self.dataCube,(_time[_idx],_channel[_idx],
                                          self.yIdx[_idx],self.xIdx[_idx]),1)
 

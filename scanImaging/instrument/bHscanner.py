@@ -20,7 +20,8 @@ class BHScanner(BaseADetector):
                'bufferSize':32768,  # Max number of 16-bit words in a single read.
                'configFile': r'C:\Users\localxueweikai\Desktop\copy of spcm.ini\spcm_Georg.ini',
                'modeNumber' : 0, # default is zero => use hardware 
-               'imageSize': np.array([512,512])
+               'imageSize': np.array([512,512]),
+               'timeRange': np.array([0, 20]), # range of the time axis
                } 
 
     def __init__(self, name=DEFAULT['name'], **kwargs):
@@ -32,6 +33,7 @@ class BHScanner(BaseADetector):
         self.configFile = self.DEFAULT['configFile']
         self.modeNumber = self.DEFAULT['modeNumber']
         self.imageSize = self.DEFAULT['imageSize']
+        self.timeRange = self.DEFAULT['timeRange']
 
         self.bhData = BHData()
         self.dataToSave = []
@@ -75,7 +77,8 @@ class BHScanner(BaseADetector):
         # TODO: do proper data saving
         #fullPath = Path(scanImaging.__file__).parent / 'DATA' / self.filename.format(self.saveIdx)
         #np.save(fullPath,np.concatenate(self.dataToSave).view(np.uint32))
-        #self.saveIdx +=1
+        self.saveIdx +=1
+        self.dataToSave = []
 
     def updateStack(self):
         ''' get data from the stack'''        
@@ -106,6 +109,9 @@ class BHScanner(BaseADetector):
                 self.stack = res
             else:
                 self.stack = np.vstack([self.stack,res])
+        
+        # TODO: check the type compatibility
+        if self.stack is not None: self.stack = self.stack.astype('int')
 
         return self.stack
 
