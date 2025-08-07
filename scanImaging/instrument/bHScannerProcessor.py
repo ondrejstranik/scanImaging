@@ -179,7 +179,7 @@ class BHScannerProcessor(BaseProcessor):
 
         # add photons to the whole dataCube
         # TODO: add proper channel and time
-        _time = np.random.randint(0,9,len(self.yIdx))
+        _time = np.random.randint(0,10,len(self.yIdx))
         _channel = np.random.randint(0,3,len(self.yIdx))
         
         if self.recordingPageIdx>=self.lastPageIdx:

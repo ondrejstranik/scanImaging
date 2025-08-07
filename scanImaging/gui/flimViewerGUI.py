@@ -31,6 +31,7 @@ class FlimViewerGUI(BaseGUI):
     def setDevice(self,device):
         super().setDevice(device)
         self.vWindow.setWindowTitle(self.DEFAULT['nameGUI'])
+
         # connect signals
         self.device.worker.yielded.connect(self.guiUpdateTimed)
 
@@ -39,7 +40,8 @@ class FlimViewerGUI(BaseGUI):
         
         if self.device.flagFullImage:
             print('updating flimViewerGUI')
-            self.flimViewer.flimData.setData(self.device.dataCubeFinished)
+            self.flimViewer.flimData.setData(self.device.dataCubeFinished,
+                                             self.device.scanner.timeRange)
             self.flimViewer.updateViewer()
             self.device.flagFullImage = False
 

@@ -8,33 +8,35 @@ import pickle
 
 class FlimData:
     ''' class for storing/processing flim data '''
-    DEFAULT = {}
-
+    DEFAULT = {'timeRange': np.array([0,10]), # (time bin0 , time bin end)
+               }
 
     def __init__(self,dataCube=None,timeRange=None,**kwarg):
         ''' initialization of the parameters 
         dataCube ... numpy array with dimensions time,channel,y,x 
         timeRange ... first and last time [ns]
         '''
-        self.dataCube = None  
-        self.timeRange = None
+
+        self.timeRange=timeRange if timeRange is not None else FlimData.DEFAULT['timeRange']
+        self.dataCube = dataCube  
         self.timeAxis = None
         self.processedData = None
 
-        self.setData(dataCube,timeRange)
+        self.setData(dataCube)
 
     def setData(self,dataCube,timeRange=None):
         ''' set signal and (time)'''
         self.dataCube = dataCube
-        
-        if timeRange is not None:
-            self.timeRange = timeRange
+        self.setTimeAxis(timeRange=timeRange)
 
-        if self.timeRange is None and self.dataCube is not None:
-            self.timeRange = np.array([0,self.dataCube.shape[0]-1])
-        
-        self.timeAxis = np.linspace(self.timeRange[0],self.timeRange[1],int(self.dataCube.shape[0]))
         self.processData()
+
+
+    def setTimeAxis(self,timeRange=None):
+        ''' set time Axis'''
+        if timeRange is not None: self.timeRange = timeRange
+        if self.dataCube is not None:
+            self.timeAxis = np.linspace(self.timeRange[0],self.timeRange[1],int(self.dataCube.shape[0]))
 
     def processData(self, type='wide-field'):
         ''' process Image'''
