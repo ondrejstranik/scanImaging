@@ -102,14 +102,19 @@ class BHScannerProcessor(BaseProcessor):
         if _value is not None: return _value        
 
         if name== 'scanner':
-            return self.aDetector
+            return self.scanner
 
     def processData(self):
         ''' process newly arrived data '''
 
         #print(f"processing data from {self.DEFAULT['name']}")
 
+        #start = time.time()
+
+
+        print(f'stack Size before getStack {self.scanner.stack.shape}')
         stack = self.scanner.getStack()
+        
         # calculate total macroTime
         self.macroTime = (self.lastMacroTime
                             + stack[:,2] -self.lastMacroSawValue
@@ -169,7 +174,6 @@ class BHScannerProcessor(BaseProcessor):
         self.xIdx = self.xIdx[insideImage]
         self.pageIdx = self.pageIdx[insideImage]       
 
-
         # add the photons to the image
         # continuos viewing
         _rawImage = 0*self.rawImage
@@ -177,6 +181,7 @@ class BHScannerProcessor(BaseProcessor):
         self.rawImage[_rawImage>0] =0
         self.rawImage = self.rawImage + _rawImage
 
+        '''
         # add photons to the whole dataCube
         # TODO: add proper channel and time
         _time = np.random.randint(0,10,len(self.yIdx))
@@ -231,7 +236,11 @@ class BHScannerProcessor(BaseProcessor):
 
             self.maxYIdx = -1 # reset the y counter
 
+        '''
 
+        #end = time.time()
+        #print(f'BHScannerProcessor.processData time {(end - start)*1000} ms')
+        print(f'stack Size was {stack.shape}')
 
 #%%
 

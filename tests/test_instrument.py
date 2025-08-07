@@ -58,7 +58,6 @@ def test_bHScanner3():
     from scanImaging.instrument.bHScanner   import BHScanner
     from scanImaging.instrument.bHScannerProcessor import BHScannerProcessor
     from viscope.main import viscope
-    from scanImaging.gui.flimViewerGUI import FlimViewerGUI
     from scanImaging.gui.scannerBHGUI import ScannerBHGUI
     from viscope.gui.cameraViewGUI import CameraViewGUI
     import time
