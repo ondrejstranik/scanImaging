@@ -20,7 +20,8 @@ class BHScannerProcessor(BaseProcessor):
                 'pixelTime': 90*445/512, # dwell time on one pixel
                 'newPageTimeFlag': 5, # threshold for new page in the macroTime
                 'numberOfAccumulation': 3, # number of images to accumulate
-                'generateDataCube': False, # if false only overview image is generated 
+                'generateDataCube': False, # if false only overview image is generated,
+                'microTimeBin' : 2**5 # resolution of the microTime Histogram
                 }
 
     def __init__(self, name=None, **kwargs):
@@ -39,6 +40,7 @@ class BHScannerProcessor(BaseProcessor):
         self.pixelTime = self.DEFAULT['pixelTime'] # dwell time on one pixel
         self.numberOfAccumulation = self.DEFAULT['numberOfAccumulation']
         self.generateDataCube = self.DEFAULT['generateDataCube'] # if false only overview image is generated
+        self.microTimeBin = self.DEFAULT['microTimeBin']
 
         # data
         self.rawImage = None  # 2D image - preview currently acquiring
@@ -55,6 +57,8 @@ class BHScannerProcessor(BaseProcessor):
         self.macroTime = 0
         self.lastMacroSawValue = 0
         self.lastMacroTime = 0
+        self.microTime = 0
+        self.channel = 0
         self.flagFullImage = False # indicate, when whole image is recorded
         self.flagFullAccumulation = False # indicate, when accumulated image is recorded
 
@@ -76,6 +80,8 @@ class BHScannerProcessor(BaseProcessor):
         self.macroTime = 0
         self.lastMacroSawValue = 0
         self.lastMacroTime = 0
+        self.microTime = 0
+        self.channel = 0
         self.flagFullImage = False # indicate, when whole image is recorded
         self.flagFullAccumulation = False # indicate, when accumulated image is recorded
 
@@ -98,8 +104,10 @@ class BHScannerProcessor(BaseProcessor):
             self.flagToProcess = self.scanner.flagLoop
             self.rawImage = np.zeros(self.scanner.imageSize)
             # TODO: set properly the dimensions, type
-            self.dataCube = np.zeros((10,3,*self.scanner.imageSize), dtype=int)
-            self.dataCubeFinished = np.zeros((10,3,*self.scanner.imageSize), dtype=int)
+            self.dataCube = np.zeros((self.microTimeBin,self.scanner.numberOfChannel,
+                                      *self.scanner.imageSize), dtype=int)
+            self.dataCubeFinished = np.zeros((self.microTimeBin,self.scanner.numberOfChannel,
+                                              *self.scanner.imageSize), dtype=int)
 
     def getParameter(self,name):
         ''' get parameter of the camera '''
@@ -153,17 +161,21 @@ class BHScannerProcessor(BaseProcessor):
         
         self.lastPageIdx = self.pageIdx[-1]
         self.lastYIdx = self.yIdx[-1]
+        self.maxYIdx  = np.max((np.max(self.yIdx),self.maxYIdx))
+
+        # get channel
+        self.channel = stack[:,3].astype('int')
+
+        # get microTime and reduce resolution
+        self.microTime = (stack[:,4] * self.microTimeBin / self.scanner.timeSize).astype('int')
 
         # info for debugging
         if np.any(returnSignal):
             print(f'new page flag generated: {np.sum(newPageFlag)}')
             print(f'max page index {np.max(self.pageIdx)}')
             print(f'last page index {self.lastPageIdx}')
-
-
         allEventYIdx = np.copy(self.yIdx)
 
-        self.maxYIdx  = np.max((np.max(self.yIdx),self.maxYIdx))
 
         # remove flags from data
         #print(f'stack 0 \n {stack[:,0]==0}')
@@ -171,6 +183,8 @@ class BHScannerProcessor(BaseProcessor):
         self.yIdx = self.yIdx[arrivedPhotons]
         self.xIdx = self.xIdx[arrivedPhotons]
         self.pageIdx = self.pageIdx[arrivedPhotons]
+        self.microTime = self.microTime[arrivedPhotons]
+        self.channel = self.channel[arrivedPhotons]
 
         #remove photons which are outside image size
         insideImage = ((self.yIdx >= 0) & (self.yIdx <= self.rawImage.shape[0]-1)
@@ -178,6 +192,8 @@ class BHScannerProcessor(BaseProcessor):
         self.yIdx = self.yIdx[insideImage]
         self.xIdx = self.xIdx[insideImage]
         self.pageIdx = self.pageIdx[insideImage]       
+        self.microTime = self.microTime[insideImage]
+        self.channel = self.channel[insideImage]
 
         # add the photons to the image
         # continuos viewing
@@ -192,17 +208,17 @@ class BHScannerProcessor(BaseProcessor):
 
         # add photons to the whole dataCube
         # TODO: add proper channel and time
-        _time = np.random.randint(0,10,len(self.yIdx))
-        _channel = np.random.randint(0,3,len(self.yIdx))
+        #self.microTime = np.random.randint(0,10,len(self.yIdx))
+        #self.channel = np.random.randint(0,3,len(self.yIdx))
         
         if self.recordingPageIdx>=self.lastPageIdx:
-            np.add.at(self.dataCube,(_time,_channel,self.yIdx,self.xIdx),1)
+            np.add.at(self.dataCube,(self.microTime,self.channel,self.yIdx,self.xIdx),1)
             #print(f'page recording. yIdx max {self.maxYIdx}')
         else:
             # full image recorded
             if (self.maxYIdx >= self.scanner.imageSize[0]-1):
                 _idx = self.pageIdx<=self.recordingPageIdx
-                np.add.at(self.dataCube,(_time[_idx],_channel[_idx],
+                np.add.at(self.dataCube,(self.microTime[_idx],self.channel[_idx],
                                          self.yIdx[_idx],self.xIdx[_idx]),1)
                 if self.accumulationIdx == 0:
                     self.dataCubeFinished = np.copy(self.dataCube)
@@ -222,7 +238,7 @@ class BHScannerProcessor(BaseProcessor):
                 _idx = self.pageIdx==self.lastPageIdx
 
                 self.dataCube = 0*self.dataCube
-                np.add.at(self.dataCube,(_time[_idx],_channel[_idx],
+                np.add.at(self.dataCube,(self.microTime[_idx],self.channel[_idx],
                                          self.yIdx[_idx],self.xIdx[_idx]),1)
 
 
@@ -239,7 +255,7 @@ class BHScannerProcessor(BaseProcessor):
                 _idx = self.pageIdx==self.lastPageIdx
                 self.recordingPageIdx = self.lastPageIdx
                 self.dataCube = 0*self.dataCube
-                np.add.at(self.dataCube,(_time[_idx],_channel[_idx],
+                np.add.at(self.dataCube,(self.microTime[_idx],self.channel[_idx],
                                          self.yIdx[_idx],self.xIdx[_idx]),1)
 
             self.maxYIdx = -1 # reset the y counter

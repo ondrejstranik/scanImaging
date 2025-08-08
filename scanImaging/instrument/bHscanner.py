@@ -21,6 +21,8 @@ class BHScanner(BaseADetector):
                'configFile': r'C:\Users\localxueweikai\Desktop\copy of spcm.ini\spcm_Georg.ini',
                'modeNumber' : 0, # default is zero => use hardware 
                'imageSize': np.array([512,512]),
+               'timeSize'  : 2**12, 
+               'numberOfChannel': 16,               
                'timeRange': np.array([0, 20]), # range of the time axis
                } 
 
@@ -34,6 +36,8 @@ class BHScanner(BaseADetector):
         self.modeNumber = self.DEFAULT['modeNumber']
         self.imageSize = self.DEFAULT['imageSize']
         self.timeRange = self.DEFAULT['timeRange']
+        self.numberOfChannel = self.DEFAULT['numberOfChannel']
+        self.timeSize = self.DEFAULT['timeSize']
 
         self.bhData = BHData()
         self.dataToSave = []
@@ -103,7 +107,11 @@ class BHScanner(BaseADetector):
                 print('stack over flow')
 
 
-            res = np.vstack([self.bhData.newMacroTimeFlag,self.bhData.newLineFlag,self.bhData.macroTime]).T
+            res = np.vstack([self.bhData.newMacroTimeFlag,
+                             self.bhData.newLineFlag,
+                             self.bhData.macroTime,
+                             self.bhData.channel,
+                             self.bhData.microTime]).T
 
             if self.isEmptyStack():
                 self.stack = res

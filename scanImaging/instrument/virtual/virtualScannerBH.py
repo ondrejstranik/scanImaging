@@ -35,6 +35,8 @@ class VirtualBHScanner(BaseADetector):
                'maxPhotonPerPixel': 10, # maximal number of event per pixel
                'macroTimeIncrement': 1e-7, # in [s] time to increase the macrotime counter per one
                'imageSize' : np.array([512,512]),
+               'timeSize'  : 2**12, 
+               'numberOfChannel': 16,
                'timeRange': np.array([0, 20]), # range of the time axis
                'scanOffSet' : np.array([5,10]) # add (horizontal,vertical) lines
                 # simulate returning path of the scanner 
@@ -51,6 +53,10 @@ class VirtualBHScanner(BaseADetector):
         self.pixelTime = self.DEFAULT['pixelTime'] # dwell time on one pixel
         self.signalTime = self.pixelTime/self.DEFAULT['maxPhotonPerPixel'] # smallest time between photons
         self.macroTimeIncrement = self.DEFAULT['macroTimeIncrement']
+        self.numberOfChannel = self.DEFAULT['numberOfChannel']
+        self.timeSize = self.DEFAULT['timeSize']
+
+
         self.timeRange = self.DEFAULT['timeRange'] # range of the time axis
         self.macroTimeTotal = 0 # start counting with start of the measurement, in [self.signalTime units]
         self.scanPosition = 0 # current position of the scanner in linear dimension
@@ -169,9 +175,18 @@ class VirtualBHScanner(BaseADetector):
             validSignal = ((_virtualPhoton ==1) | tMacroFlag | newLineFlag)
             #print(f'size of stack {np.sum(validSignal*1)}')
 
+            # TODO: generate proper channel and time according the sample
+            # currently only arbitrary
+            _numberOfSignal = np.sum(validSignal)
+            _microTime = np.random.randint(0,self.timeSize,_numberOfSignal)
+            _channel = np.random.randint(0,self.numberOfChannel,_numberOfSignal)
+
+
             virtualStack = np.vstack([tMacroFlag[validSignal],
                                       newLineFlag[validSignal],
-                                      tMacroSaw[1:][validSignal]]).T
+                                      tMacroSaw[1:][validSignal],
+                                      _channel,
+                                      _microTime]).T
 
 
         self.lastStackTime = currentTime
