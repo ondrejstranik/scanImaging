@@ -24,9 +24,12 @@ class ScannerBHGUI(BaseGUI):
 
     def __setWidget(self):
         ''' prepare the gui '''
-        @magicgui(auto_call=True)
+        @magicgui(auto_call=True,
+                    stackSize = {'label':'stackSize',
+                                 'widget_type':'Label'})
         def parameterADetectorGui(
-            acquisition = False
+            acquisition = False,
+            stackSize = ''
             ):
             if acquisition: 
                  self.processor.resetCounter()
@@ -40,6 +43,7 @@ class ScannerBHGUI(BaseGUI):
             numberOfAccumulation = 5
             ):
             self.processor.numberOfAccumulation = numberOfAccumulation
+            self.processor.generateDataCube = False if continuous else True
 
 
         # add widget parameterCameraGui 
@@ -59,6 +63,7 @@ class ScannerBHGUI(BaseGUI):
         # set gui parameters
         self.parameterADetectorGui.acquisition.value = self.device.acquiring
         self.parameter2ADetectorGui.numberOfAccumulation.value = self.processor.numberOfAccumulation
+        self.parameter2ADetectorGui.continuous.value = self.processor.generateDataCube
 
         self.dw.setWindowTitle(self.device.name)
 
@@ -71,6 +76,7 @@ class ScannerBHGUI(BaseGUI):
             not self.parameter2ADetectorGui.continuous.value):
              #self.device.stopAcquisition()
              self.parameterADetectorGui.acquisition.value = False
+        self.parameterADetectorGui.stackSize.value = str(self.processor.stackSize)
              
 if __name__ == "__main__":
         pass

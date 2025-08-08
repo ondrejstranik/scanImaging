@@ -19,7 +19,8 @@ class BHScannerProcessor(BaseProcessor):
     DEFAULT = {'name': 'ScannerProcessor',
                 'pixelTime': 90*445/512, # dwell time on one pixel
                 'newPageTimeFlag': 5, # threshold for new page in the macroTime
-                'numberOfAccumulation': 3 # number of images to accumulate
+                'numberOfAccumulation': 3, # number of images to accumulate
+                'generateDataCube': False, # if false only overview image is generated 
                 }
 
     def __init__(self, name=None, **kwargs):
@@ -31,9 +32,13 @@ class BHScannerProcessor(BaseProcessor):
         # asynchronous Detector
         self.scanner = None
 
+        # for debugging
+        self.stackSize = 0
+
         # parameters for calculation
         self.pixelTime = self.DEFAULT['pixelTime'] # dwell time on one pixel
         self.numberOfAccumulation = self.DEFAULT['numberOfAccumulation']
+        self.generateDataCube = self.DEFAULT['generateDataCube'] # if false only overview image is generated
 
         # data
         self.rawImage = None  # 2D image - preview currently acquiring
@@ -112,9 +117,9 @@ class BHScannerProcessor(BaseProcessor):
         #start = time.time()
 
 
-        print(f'stack Size before getStack {self.scanner.stack.shape}')
         stack = self.scanner.getStack()
-        
+        self.stackSize = stack.shape[0]
+
         # calculate total macroTime
         self.macroTime = (self.lastMacroTime
                             + stack[:,2] -self.lastMacroSawValue
@@ -181,7 +186,10 @@ class BHScannerProcessor(BaseProcessor):
         self.rawImage[_rawImage>0] =0
         self.rawImage = self.rawImage + _rawImage
 
-        '''
+        
+        if not self.generateDataCube:
+            return
+
         # add photons to the whole dataCube
         # TODO: add proper channel and time
         _time = np.random.randint(0,10,len(self.yIdx))
@@ -236,11 +244,9 @@ class BHScannerProcessor(BaseProcessor):
 
             self.maxYIdx = -1 # reset the y counter
 
-        '''
-
         #end = time.time()
         #print(f'BHScannerProcessor.processData time {(end - start)*1000} ms')
-        print(f'stack Size was {stack.shape}')
+        #print(f'stack Size was {self.stackSize}')
 
 #%%
 
