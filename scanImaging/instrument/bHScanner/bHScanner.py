@@ -6,6 +6,7 @@ import time
 
 from viscope.instrument.base.baseADetector import BaseADetector
 from scanImaging.algorithm.dataCoding import BHData
+from scanImaging.instrument.bHScanner.mousecommand import CommWindows200Computer
 
 from bh_spc import spcm
 from pathlib import Path
@@ -19,6 +20,7 @@ class BHScanner(BaseADetector):
     DEFAULT = {'name':'BHScanner',
                'bufferSize':32768,  # Max number of 16-bit words in a single read.
                'configFile': r'C:\Users\localxueweikai\Desktop\copy of spcm.ini\spcm_Georg.ini',
+               'serPort': 'COM4', # serial port for communication with Olympus scanner FV300
                'modeNumber' : 0, # default is zero => use hardware 
                'imageSize': np.array([512,512]),
                'timeSize'  : 2**12, 
@@ -44,6 +46,8 @@ class BHScanner(BaseADetector):
         self.saveIdx = 0
         self.filename = 'rawBHData_{}.npy'
 
+        self.fv300 = None # for serial communication with the software of olymupus fluoroview
+
     def connect(self):
         ''' connect to the instrument '''
         super().connect()
@@ -62,27 +66,47 @@ class BHScanner(BaseADetector):
         for par, val in res2.items():
             print(f"{par} = {val}")
 
+        # try to connect with olympus fluoroview
+        try:
+            self.fv300 = CommWindows200Computer(port=self.DEFAULT['serPort'])
+            print('connected with olympus fluoroview')
+        except:
+            print('no established communication with the FV300')
+            self.fv300 = None
+
+
     def disconnect(self):
         ''' disconnect the instrument '''
         super().disconnect()
         spcm.close()
+
+        self.fv300.close()
+        print('disconnected with olympus fluoroview')
 
 
     def startAcquisition(self):
         '''start detector collecting data in a stack '''
         super().startAcquisition()
         spcm.start_measurement(self.modeNumber)
+        
+        # start galvano mirrors
+        if self.fv300 is not None:
+            self.fv300.start_repeat_scan()
 
     def stopAcquisition(self):
         '''stop detector collecting data in a stack '''
         super().stopAcquisition()
         spcm.stop_measurement(self.modeNumber)
-        
+        self.fv300.stop_scanner()
+
         # TODO: do proper data saving
         #fullPath = Path(scanImaging.__file__).parent / 'DATA' / self.filename.format(self.saveIdx)
         #np.save(fullPath,np.concatenate(self.dataToSave).view(np.uint32))
-        self.saveIdx +=1
-        self.dataToSave = []
+        #self.saveIdx +=1
+        #self.dataToSave = []
+
+
+
 
     def updateStack(self):
         ''' get data from the stack'''        

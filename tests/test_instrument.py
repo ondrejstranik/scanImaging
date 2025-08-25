@@ -23,7 +23,7 @@ def test_bHScanner():
 
 def test_bHScanner2():
     ''' check the scanner data are processed live '''
-    from scanImaging.instrument.bHScanner   import BHScanner
+    from scanImaging.instrument.bHScanner.bHScanner   import BHScanner
     from scanImaging.instrument.bHScannerProcessor import BHScannerProcessor
     from viscope.main import viscope
     from scanImaging.gui.flimViewerGUI import FlimViewerGUI
@@ -55,7 +55,7 @@ def test_bHScanner2():
 
 def test_bHScanner3():
     ''' check the scanner data are processed live  - check just live imag'''
-    from scanImaging.instrument.bHScanner   import BHScanner
+    from scanImaging.instrument.bHScanner.bHScanner   import BHScanner
     from scanImaging.instrument.bHScannerProcessor import BHScannerProcessor
     from viscope.main import viscope
     from scanImaging.gui.scannerBHGUI import ScannerBHGUI
