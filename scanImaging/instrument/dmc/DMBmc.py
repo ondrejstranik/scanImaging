@@ -15,7 +15,7 @@ import bmc
 import numpy as np
 from viscope.instrument.base.baseSLM import BaseSLM
 
-def image_from_surface(surface,size_x,size_y,image:np.ndarray):
+def image_from_surface(surface,size_x,size_y):
         ''' Convert a bmc.DoubleVector surface (C++ vector from SWIG) to a 2D numpy array,
             be careful with size_x and size_y and ordering of indices'''
         image=np.zeros((size_x,size_y))
@@ -24,7 +24,7 @@ def image_from_surface(surface,size_x,size_y,image:np.ndarray):
                 image[i,j] = surface[i*size_y + j]
         return image
     
-def surface_from_image(image:np.ndarray,surface):
+def surface_from_image(image:np.ndarray):
         ''' Convert a 2D numpy array to a bmc.DoubleVector surface (C++ vector from SWIG)'''
         size_x,size_y=image.shape
         surface=bmc.DoubleVector(size_x*size_y)
@@ -127,7 +127,7 @@ class DMBmc(BaseSLM):
 
     def _update_surface_from_image(self):
         self.sizeX, self.sizeY = self.image.shape
-        surface_from_image(self.image,self.surface)
+        self.surface=surface_from_image(self.image)
 
     def get_downsampled_surface(self):
         err_code,command_map, downsampled_surface = self.dm.calculate_surface(self.surface, self.sizeX, self.sizeY, self.active_aperture)
@@ -153,7 +153,7 @@ class DMBmc(BaseSLM):
         # TODO: active_aperature is zero here since it will be handled in dispay_surface. Is this consistent?
         err_code, self.surface = self.dm.zernike_surface(rms_zernike_nm, 0, 0)
         self._set_error_code(err_code)
-        image_from_surface(self.surface,self.width,self.width,self.image)
+        self.image=image_from_surface(self.surface,self.width,self.width)
 
 
 if __name__ == '__main__':
