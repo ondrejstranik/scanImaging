@@ -5,8 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name="scanImaging"
 version="0.0.1"
-dependencies = ['pybhspc',
-        ]
+dependencies = []
 requires-python='>=3.9'
 authors = [
         {name = "Ondrej Stranik", email = "ondra.stranik@gmail.com"},

@@ -1,12 +1,9 @@
 
-#import sys
-# Add the current directory to sys.path
-#sys.path.append(r'C:\Users\localxueweikai\Documents\GitHub\scanImaging\scanImaging\instrument\dmc')
 
-import os
-import sys
+
 import numpy as np
 from viscope.instrument.base.baseSLM import BaseSLM
+import scanImaging.algorithm.SimpleZernike as simzern
 
 def image_from_surface(surface,size_x,size_y):
         ''' Convert a bmc.DoubleVector surface (C++ vector from SWIG) to a 2D numpy array,
@@ -16,24 +13,29 @@ def image_from_surface(surface,size_x,size_y):
             for j in range(size_y):
                 image[i,j] = surface[i*size_y + j]
         return image
+
+def FakeDoubleVector(size):
+    return np.zeros(size,np.float64)
     
 def surface_from_image(image:np.ndarray):
         ''' Convert a 2D numpy array to a bmc.DoubleVector surface (C++ vector from SWIG)'''
         size_x,size_y=image.shape
-        surface=bmc.DoubleVector(size_x*size_y)
+        surface=FakeDoubleVector(size_x*size_y)
         for i in range(size_x):
             for j in range(size_y):
                 surface[i*size_y + j] = image[i,j]
         return surface
 
-class DMBmc(BaseSLM):
+class VirtualDMBmc(BaseSLM):
     ''' Light modulator class for Boston Micromachines deformable mirror'''
     
-    DEFAULT = {'name':'DMBmc',
+    DEFAULT = {'name':'VirtualDMBmc',
              'monitor': 1} 
     
     def __init__(self,name=DEFAULT['name'], **kwargs):
-        self.is_connected = False
+        super().__init__(name=name, **kwargs)
+
+        self.monitor = kwargs['monitor'] if 'monitor' in kwargs else VirtualDMBmc.DEFAULT['monitor']
         self.dm = None        
         self.image = None
         # For Zernike polynomials, one can specify the radius of the active aperture
@@ -44,38 +46,17 @@ class DMBmc(BaseSLM):
         self.sizeY = 0
         # surface in contrast to image, is a cpp array with the phase map
         self.surface=None
-        super().__init__(name=name, **kwargs)
-        self.monitor = kwargs['monitor'] if 'monitor' in kwargs else DMBmc.DEFAULT['monitor']
-        self.dll_path = r"C:\Program Files\Boston Micromachines\Bin64"
-        if kwargs.get('dll_path'):
-            self.dll_path = kwargs.get('dll_path')
-        if not sys.version_info >= (3, 8):
-            print("Warning: DLL directory not added automatically for Python versions below 3.8. Make sure the DLLs are accessible.")
-        else:
-            if self.dll_path and self.dll_path != ".":
-                if not os.path.isdir(self.dll_path):
-                    raise FileNotFoundError(f"DMBMC Error: specified DLL directory {self.dll_path} does not exist. Use the 'dll_path' argument to specify a different path. ")
-                os.add_dll_directory(self.dll_path)
-        try:
-            import bmc
-        except ImportError as e:
-            message_err=f"DMBMC Error: could not import bmc module. Make sure the Boston Micromachines SDK is installed and the DLLs are accessible. Original error: {e}"
-            raise ImportError(message_err)
-
-
+        self.serial_number = None
+        self.actuators=None
+        self.is_connected = False
 
     def connect(self, serial_number='MultiUSB000', **kwargs):
         ''' connect to the instrument '''
         super().connect()
-        self.dm = bmc.BmcDm()
-        if "log_level" in kwargs and "log_file" in kwargs:
-            self.dm.configure_log(kwargs["log_file"],kwargs["log_level"])
-        self._set_error_code(self.dm.open_dm(serial_number))
-        if self.err_code:
-            raise Exception(self.dm.error_string(self.err_code))
+        self.serial_number = serial_number
         self.active_aperture=0
-        self.width = self.dm.num_actuators_width()
-        self.surface=bmc.DoubleVector(self.width*self.width)
+        self.width = 12
+        self.surface=FakeDoubleVector(self.width*self.width)
         self.sizeX, self.sizeY = self.width, self.width
         # set image
         self.setImage(np.zeros((self.sizeY,self.sizeX)))
@@ -85,7 +66,7 @@ class DMBmc(BaseSLM):
         if not self.is_connected:
             return
         super().disconnect()
-        self._set_error_code(self.dm.close_dm())
+        self._set_error_code(None)
         self.is_connected = False
 
     def __del__(self):
@@ -103,30 +84,25 @@ class DMBmc(BaseSLM):
     
     def report_last_error(self):
         if self.err_code:
-            return self.dm.error_string(self.get_last_error_code())
+            return f"Error code of VirtualDMBmc {self.err_code}."
         else:
             return "No error."
         
     def report(self):
-        return self.dm.error_string(self.dm.get_status())
+        return f"VirtualDMBmc connected: {self.is_connected}, serial number: {self.serial_number}, width: {self.width}, active aperture: {self.active_aperture}, error code: {self.err_code}"
 
     def load_matlab_calibration(self, filename):
-        self._set_error_code(self.dm.load_calibration_file(filename))
+        print(f'VirtualDMBmc: load_matlab_calibration from {filename} (not implemented)')
 
 
     def update_actuators(self):
-         self._set_error_code(self.dm.send_data(self.actuator_array.tolist()))
+         print('VirtualDMBmc: update_actuators (not implemented)')
 
     def set_actuators(self, actuator_array):
-        ''' Set the actuator commands from a numpy array '''
-        if len(actuator_array) != self.dm.num_actuators():
-            raise ValueError("Actuator array length does not match number of actuators.")
-        self._set_error_code(self.dm.send_data(actuator_array.tolist()))
+        self.actuators = actuator_array
 
     def get_actuator_commands(self):
-        actuator_commands = bmc.DoubleVector(self.dm.num_actuators())
-        self._set_error_code(self.dm.get_data(actuator_commands))
-        return np.array(actuator_commands)    
+        return self.actuators
 
     def set_active_aperture(self, radius):
 #        width = dm.num_actuators_width()
@@ -139,13 +115,10 @@ class DMBmc(BaseSLM):
         self.surface=surface_from_image(self.image)
 
     def get_downsampled_surface(self):
-        err_code,command_map, downsampled_surface = self.dm.calculate_surface(self.surface, self.sizeX, self.sizeY, self.active_aperture)
-        self._set_error_code(err_code)
-        return command_map,downsampled_surface
+        return self.actuators,self.surface
 
     def display_surface(self):
-        ''' Send the current surface to the DM and display it. Convention: other functions (except setImage()) will only update the stored surface, this function will actually send it to the DM.'''
-        self._set_error_code(self.dm.set_surface(self.surface, self.sizeX, self.sizeY, self.active_aperture))
+        print('VirtualDMBmc: display_surface (not implemented)')
 
 
     def set_phase_map_nm(self,phase_map_nm:np.ndarray):
@@ -158,15 +131,13 @@ class DMBmc(BaseSLM):
         self.display_surface()
 
     def set_phase_map_from_zernike(self, rms_zernike_nm):
-        self.surface=bmc.DoubleVector(self.width*self.width)
-        # TODO: active_aperature is zero here since it will be handled in dispay_surface. Is this consistent?
-        err_code, self.surface = self.dm.zernike_surface(rms_zernike_nm, 0, 0)
-        self._set_error_code(err_code)
-        self.image=image_from_surface(self.surface,self.width,self.width)
+        self.surface=FakeDoubleVector(self.width*self.width)
+        self.image=simzern.zernike_phase_map(rms_zernike_nm,self.width,self.width,self.active_aperture)
+        self._update_surface_from_image()
 
 
 if __name__ == '__main__':
-    dm=DMBmc(dll_path=".")
+    dm=VirtualDMBmc()
     dm.connect(serial_number='17DW008#094')
     print('BMC report:', dm.report())
     dm.set_phase_map_from_zernike([0,0,0,0,10])
