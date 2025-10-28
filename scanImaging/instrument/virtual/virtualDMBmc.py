@@ -147,4 +147,5 @@ if __name__ == '__main__':
     import matplotlib.pyplot as plt
     plt.imshow(dm.image)
     plt.show()
+    print(dm.image)
     pass

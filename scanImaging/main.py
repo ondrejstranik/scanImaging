@@ -13,6 +13,8 @@ class ScanImaging():
         from scanImaging.instrument.bHScannerProcessor import BHScannerProcessor
         from scanImaging.gui.flimViewerGUI import FlimViewerGUI
         from scanImaging.gui.scannerBHGUI import ScannerBHGUI
+        from scanImaging.instrument.dmc.DMBmc import DMBmc
+        from scanImaging.gui.dmGui import DMGui
         from viscope.gui.cameraViewGUI import CameraViewGUI
         import time
 
@@ -24,6 +26,9 @@ class ScanImaging():
         bhPro.connect(scanner=bhScanner)
         bhPro.setParameter('threadingNow', True)
 
+        dmDevice = DMBmc(name='DMBmc')
+        dmDevice.connect()
+
         adGui  = ScannerBHGUI(viscope)
         adGui.setDevice(bhScanner,processor=bhPro)
 
@@ -32,6 +37,9 @@ class ScanImaging():
 
         fvGui  = FlimViewerGUI(viscope,vWindow='new')
         fvGui.setDevice(bhPro)
+
+        dmGui=DMGui(viscope,vWindow='new')
+        dmGui.setDevice(dmDevice)
 
         viscope.run()
         bhPro.disconnect()
@@ -50,6 +58,7 @@ class ScanImaging():
         from viscope.main import viscope
         from scanImaging.gui.scannerBHGUI import ScannerBHGUI
         from viscope.gui.cameraViewGUI import CameraViewGUI
+        from scanImaging.gui.dmGui import DMGui
         import time
         bhScanner = VirtualBHScanner(name='BHScanner')
         bhScanner.connect()
@@ -62,7 +71,8 @@ class ScanImaging():
         VirtualDMBmc=VirtualDMBmc(name='DMBmc')
         VirtualDMBmc.connect()
 
-        adGui  = ScannerBHGUI(viscope)
+
+        adGui  = ScannerBHGUI(viscope,vVindow='new')
         adGui.setDevice(bhScanner,processor=bhPro)
 
         cvGui  = CameraViewGUI(viscope,vWindow='new')
@@ -70,6 +80,11 @@ class ScanImaging():
 
         fvGui  = FlimViewerGUI(viscope,vWindow='new')
         fvGui.setDevice(bhPro)
+
+        dmGui=DMGui(viscope,vWindow='new')
+        dmGui.setDevice(VirtualDMBmc)
+
+
 
         viscope.run()
         bhPro.disconnect()
