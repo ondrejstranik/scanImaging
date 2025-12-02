@@ -32,9 +32,7 @@ class FlimViewer(QWidget):
 
         # napari
         if 'show' in kwargs:
-            #TODO: add show to the NapariViewer
-            self.viewer = NapariViewer()
-            #self.viewer = NapariViewer(show=kwargs['show'])
+            self.viewer = NapariViewer(show=kwargs['show'])
         else:
             self.viewer = NapariViewer()
 

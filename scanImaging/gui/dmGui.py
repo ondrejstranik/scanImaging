@@ -14,7 +14,7 @@ from viscope.gui.napariViewer.napariViewer import NapariViewer
 
 class DMGui(BaseGUI):
     ''' main class to define and view SLM images'''
-    DEFAULT = {'nameGUI': 'dm',
+    DEFAULT = {'nameGUI': 'DM image',
                'liveUpdate': 'Live Update DM',
                'zernikeGui': 'DM Zernike',
                'updateNow': 'Update DM Now'
@@ -35,8 +35,11 @@ class DMGui(BaseGUI):
         self.zernikeCoeffs = np.zeros(15)
         self.active_aperture = 0
         # initiate napari viewer
-        self.viewer = NapariViewer()
-        self.viewer.window._qt_window.setWindowTitle('DM image')
+        self.viewer = NapariViewer(show=False)
+        # napari can not work in a dock Window,
+        # therefore it must run in the main Window
+        #self.vWindow.addMainGUI(self.viewer.window._qt_window, name=self.DEFAULT['nameGUI'])
+        #self.viewer.window._qt_window.setWindowTitle('DM image')
         self.imageLayer = self.viewer.add_image(
             self.imageDM, name='Setting Image', colormap='red',
             contrast_limits=(0.0, 255.0))
@@ -120,7 +123,10 @@ class DMGui(BaseGUI):
 
         # add widget parameterCameraGui 
         self.parameterDMGUI = parameterDMGUI
-        self.dw = self.vWindow.addParameterGui(self.parameterDMGUI,name=self.DEFAULT['liveUpdate'])
+        # - os - self.dw = self.vWindow.addParameterGui(self.parameterDMGUI,name=self.DEFAULT['liveUpdate'])
+        self.dw = self.viewer.window.add_dock_widget(self.parameterDMGUI, name=self.DEFAULT['liveUpdate'], area='bottom')
+        if self.dockWidgetParameter is not None:
+            self.viewer.window._qt_window.tabifyDockWidget(self.dockWidgetParameter,self.dw)
         # remember this dock immediately so subsequent tabify uses a valid dock
         self.dockWidgetParameter = self.dw
 
@@ -134,7 +140,11 @@ class DMGui(BaseGUI):
 
         self.updateNow = updateNow
         # add the button to the same parameters area so it appears under the checkbox
-        self.vWindow.addParameterGui(self.updateNow, name=self.DEFAULT['updateNow'])
+        # - os - self.vWindow.addParameterGui(self.updateNow, name=self.DEFAULT['updateNow'])
+        self.dw = self.viewer.window.add_dock_widget(self.updateNow, name=self.DEFAULT['updateNow'], area='bottom')
+        if self.dockWidgetParameter is not None:
+            self.viewer.window._qt_window.tabifyDockWidget(self.dockWidgetParameter,self.dw)
+        self.dockWidgetParameter = self.dw
 
         ''' prepare the qui '''
         @magicgui(auto_call=False,
@@ -151,7 +161,11 @@ class DMGui(BaseGUI):
                 pass
             self.generateImage()
         self.zernikeGui = zernikeGui
-        self.dw =self.vWindow.addParameterGui(self.zernikeGui,name=self.DEFAULT['zernikeGui'])
+        # self.dw =self.vWindow.addParameterGui(self.zernikeGui,name=self.DEFAULT['zernikeGui'])
+        self.dw = self.viewer.window.add_dock_widget(self.zernikeGui,name=self.DEFAULT['zernikeGui'], area='bottom')
+        if self.dockWidgetParameter is not None:
+            self.viewer.window._qt_window.tabifyDockWidget(self.dockWidgetParameter,self.dw)
+        self.dockWidgetParameter = self.dw
         self.vWindow.addMainGUI(self.viewer.window._qt_window, name=self.DEFAULT['nameGUI']) 
 
 
