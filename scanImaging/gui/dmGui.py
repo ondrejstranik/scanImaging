@@ -8,7 +8,7 @@ import napari
 from magicgui import magicgui
 import numpy as np
 from qtpy.QtWidgets import QLineEdit, QSizePolicy
-
+from viscope.gui.napariViewer.napariViewer import NapariViewer
 
 
 
@@ -34,11 +34,8 @@ class DMGui(BaseGUI):
         self.imageDM= np.zeros((self.sizeX,self.sizeY))
         self.zernikeCoeffs = np.zeros(15)
         self.active_aperture = 0
-        # initiate napari
-        if 'show' in kwargs:
-            self.viewer = napari.Viewer(show=kwargs['show'])
-        else:
-            self.viewer = napari.Viewer()
+        # initiate napari viewer
+        self.viewer = NapariViewer()
         self.viewer.window._qt_window.setWindowTitle('DM image')
         self.imageLayer = self.viewer.add_image(
             self.imageDM, name='Setting Image', colormap='red',

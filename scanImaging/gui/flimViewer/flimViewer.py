@@ -7,6 +7,7 @@ from PyQt5.QtGui import QColor, QPen
 from qtpy.QtWidgets import QLabel, QSizePolicy, QWidget, QMainWindow
 from qtpy.QtCore import Qt
 from qtpy.QtCore import Signal
+from viscope.gui.napariViewer.napariViewer import NapariViewer
 
 import numpy as np
 from scanImaging.algorithm.flimData import FlimData
@@ -31,9 +32,11 @@ class FlimViewer(QWidget):
 
         # napari
         if 'show' in kwargs:
-            self.viewer = napari.Viewer(show=kwargs['show'])
+            #TODO: add show to the NapariViewer
+            self.viewer = NapariViewer()
+            #self.viewer = NapariViewer(show=kwargs['show'])
         else:
-            self.viewer = napari.Viewer()
+            self.viewer = NapariViewer()
 
         self.imageLayer = None
 
