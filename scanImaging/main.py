@@ -1,5 +1,12 @@
 
 from viscope.main import viscope
+import sys
+# Add the current directory to sys.path
+#sys.path.append(r'C:\Users\localxueweikai\Documents\GitHub\scanImaging\scanImaging\instrument\dmc')
+
+import os
+#if sys.version_info >= (3, 8):
+#    os.add_dll_directory(r"C:\Program Files\Boston Micromachines\Bin64")
 
 class ScanImaging():
     ''' base top class for control'''
@@ -92,4 +99,5 @@ class ScanImaging():
 
 if __name__ == "__main__":
     ScanImaging.runVirtual()
+#    ScanImaging.runReal()
 

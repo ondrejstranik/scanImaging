@@ -3,6 +3,20 @@
 # Add the current directory to sys.path
 #sys.path.append(r'C:\Users\localxueweikai\Documents\GitHub\scanImaging\scanImaging\instrument\dmc')
 
+#import sys
+# Add the current directory to sys.path
+#sys.path.append(r'C:\Users\localxueweikai\Documents\GitHub\scanImaging\scanImaging\instrument\dmc')
+
+#import os
+#import sys
+
+#if sys.version_info >= (3, 8):
+#    os.add_dll_directory(r"C:\Program Files\Boston Micromachines\Bin64")
+
+
+
+#import bmc
+
 import os
 import sys
 import numpy as np
@@ -17,7 +31,7 @@ def image_from_surface(surface,size_x,size_y):
                 image[i,j] = surface[i*size_y + j]
         return image
     
-def surface_from_image(image:np.ndarray):
+def surface_from_image(image:np.ndarray,bmc):
         ''' Convert a 2D numpy array to a bmc.DoubleVector surface (C++ vector from SWIG)'''
         size_x,size_y=image.shape
         surface=bmc.DoubleVector(size_x*size_y)
@@ -46,9 +60,13 @@ class DMBmc(BaseSLM):
         self.surface=None
         super().__init__(name=name, **kwargs)
         self.monitor = kwargs['monitor'] if 'monitor' in kwargs else DMBmc.DEFAULT['monitor']
+        sys.path.append(r'C:\Users\localxueweikai\Documents\GitHub\scanImaging\scanImaging\instrument\dmc')
         self.dll_path = r"C:\Program Files\Boston Micromachines\Bin64"
         if kwargs.get('dll_path'):
             self.dll_path = kwargs.get('dll_path')
+        self.matlab_calibration_file="C:\Program Files\Boston Micromachines\Calibration\Sample_Multi_OLC1_CAL.mat"
+        if kwargs.get('calibration_file'):
+            self.matlab_calibration_file=kwargs.get('calibration_file')
         if not sys.version_info >= (3, 8):
             print("Warning: DLL directory not added automatically for Python versions below 3.8. Make sure the DLLs are accessible.")
         else:
@@ -57,7 +75,8 @@ class DMBmc(BaseSLM):
                     raise FileNotFoundError(f"DMBMC Error: specified DLL directory {self.dll_path} does not exist. Use the 'dll_path' argument to specify a different path. ")
                 os.add_dll_directory(self.dll_path)
         try:
-            import bmc
+            from scanImaging.instrument.dmc import bmc
+            self.bmc=bmc
         except ImportError as e:
             message_err=f"DMBMC Error: could not import bmc module. Make sure the Boston Micromachines SDK is installed and the DLLs are accessible. Original error: {e}"
             raise ImportError(message_err)
@@ -67,15 +86,18 @@ class DMBmc(BaseSLM):
     def connect(self, serial_number='MultiUSB000', **kwargs):
         ''' connect to the instrument '''
         super().connect()
-        self.dm = bmc.BmcDm()
+        self.dm = self.bmc.BmcDm()
         if "log_level" in kwargs and "log_file" in kwargs:
             self.dm.configure_log(kwargs["log_file"],kwargs["log_level"])
         self._set_error_code(self.dm.open_dm(serial_number))
         if self.err_code:
             raise Exception(self.dm.error_string(self.err_code))
+        self.load_matlab_calibration(self.matlab_calibration_file)
+        if self.err_code:
+            raise Exception("Calibration file load error "+self.dm.error_string(self.err_code))
         self.active_aperture=0
         self.width = self.dm.num_actuators_width()
-        self.surface=bmc.DoubleVector(self.width*self.width)
+        self.surface=self.bmc.DoubleVector(self.width*self.width)
         self.sizeX, self.sizeY = self.width, self.width
         # set image
         self.setImage(np.zeros((self.sizeY,self.sizeX)))
@@ -124,7 +146,7 @@ class DMBmc(BaseSLM):
         self._set_error_code(self.dm.send_data(actuator_array.tolist()))
 
     def get_actuator_commands(self):
-        actuator_commands = bmc.DoubleVector(self.dm.num_actuators())
+        actuator_commands = self.bmc.DoubleVector(self.dm.num_actuators())
         self._set_error_code(self.dm.get_data(actuator_commands))
         return np.array(actuator_commands)    
 
@@ -136,7 +158,7 @@ class DMBmc(BaseSLM):
 
     def _update_surface_from_image(self):
         self.sizeX, self.sizeY = self.image.shape
-        self.surface=surface_from_image(self.image)
+        self.surface=surface_from_image(self.image,self.bmc)
 
     def get_downsampled_surface(self):
         err_code,command_map, downsampled_surface = self.dm.calculate_surface(self.surface, self.sizeX, self.sizeY, self.active_aperture)
@@ -158,7 +180,7 @@ class DMBmc(BaseSLM):
         self.display_surface()
 
     def set_phase_map_from_zernike(self, rms_zernike_nm):
-        self.surface=bmc.DoubleVector(self.width*self.width)
+        self.surface=self.bmc.DoubleVector(self.width*self.width)
         # TODO: active_aperature is zero here since it will be handled in dispay_surface. Is this consistent?
         err_code, self.surface = self.dm.zernike_surface(rms_zernike_nm, 0, 0)
         self._set_error_code(err_code)
@@ -166,14 +188,35 @@ class DMBmc(BaseSLM):
 
 
 if __name__ == '__main__':
-    dm=DMBmc(dll_path=".")
+    import time
+    dm=DMBmc()
     dm.connect(serial_number='17DW008#094')
     print('BMC report:', dm.report())
-    dm.set_phase_map_from_zernike([0,0,0,0,10])
+    err_code, minPiston, maxPiston = dm.dm.get_segment_range(0, dm.bmc.DM_Piston, 0, 0, 0, True);
+    if err_code:
+        raise Exception(dm.error_string(err_code))
+    print('DM Piston range: %f to %f nm' % (minPiston, maxPiston))
+    Zernike_coefficients = [ 0, 0, 0, 0, 0, 0 ]
+    w = dm.dm.num_actuators_width()    # 12 for Multi, 13 for Multi-C
+    # Add 200nm RMS of defocus
+    Zernike_coefficients[4] = 200
+    surface = dm.bmc.DoubleVector(w*w)
+    err_code, surface = dm.dm.zernike_surface(Zernike_coefficients, 0, 0)
+    #print(np.asarray(surface).reshape(w,w))
+    if err_code:
+        raise Exception(dm.dm.error_string(err_code))
+    err_code = dm.dm.set_surface(surface, w, w)
+    if err_code:
+        raise Exception(dm.dm.error_string(err_code))
+    time.sleep(2)
+
+    dm.set_phase_map_from_zernike([0,0,0,0,100])
     dm.display_surface()
     print('BMC report after setting Zernike:', dm.report())
     print('Current error:', dm.report_last_error() )
     import matplotlib.pyplot as plt
     plt.imshow(dm.image)
     plt.show()
+    print("Press any key")
+    input()
     pass
