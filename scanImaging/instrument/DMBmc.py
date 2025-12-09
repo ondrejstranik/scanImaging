@@ -18,6 +18,7 @@
 #import bmc
 
 import os
+import importlib
 import sys
 import numpy as np
 from viscope.instrument.base.baseSLM import BaseSLM
@@ -45,6 +46,38 @@ class DMBmc(BaseSLM):
     
     DEFAULT = {'name':'DMBmc',
              'monitor': 1} 
+    # library loading management
+    # class level variables to ensure DLLs are loaded only once
+    dll_path = None       
+    _dll_loaded = False
+    bmc = None
+
+    @classmethod
+    def _load_dll(cls):
+        if not sys.version_info >= (3, 8):
+            print("Warning: DLL directory not added automatically for Python versions below 3.8. Make sure the DLLs are accessible.")
+        else:
+            if cls.dll_path and cls.dll_path != ".":
+                if not os.path.isdir(cls.dll_path):
+                    raise FileNotFoundError(f"DMBMC Error: specified DLL directory {cls.dll_path} does not exist. Use the 'dll_path' argument to specify a different path. ")
+                os.add_dll_directory(cls.dll_path)
+
+    @classmethod
+    def set_dll_path(cls, path):
+        if cls._dll_loaded:
+            raise RuntimeError("DLL path must be set before loading the extension module")
+        cls.dll_path = path
+
+    @classmethod
+    def _ensure_loaded(cls):
+        if cls._dll_loaded:
+            return
+
+        if cls.dll_path:
+            cls._load_dll()
+
+        cls.bmc = importlib.import_module("bmc")
+        cls._dll_loaded = True
     
     def __init__(self,name=DEFAULT['name'], **kwargs):
         self.is_connected = False
@@ -59,24 +92,25 @@ class DMBmc(BaseSLM):
         # surface in contrast to image, is a cpp array with the phase map
         self.surface=None
         super().__init__(name=name, **kwargs)
+
         self.monitor = kwargs['monitor'] if 'monitor' in kwargs else DMBmc.DEFAULT['monitor']
-        sys.path.append(r'C:\Users\localxueweikai\Documents\GitHub\scanImaging\scanImaging\instrument\dmc')
-        self.dll_path = r"C:\Program Files\Boston Micromachines\Bin64"
+
+        dll_path = r"C:\Program Files\Boston Micromachines\Bin64"
         if kwargs.get('dll_path'):
-            self.dll_path = kwargs.get('dll_path')
+            dll_path=kwargs.get('dll_path')
+        if not self._dll_loaded:
+            self.set_dll_path(dll_path)
+        self._ensure_loaded()
+
+
         self.matlab_calibration_file="C:\Program Files\Boston Micromachines\Calibration\Sample_Multi_OLC1_CAL.mat"
         if kwargs.get('calibration_file'):
             self.matlab_calibration_file=kwargs.get('calibration_file')
-        if not sys.version_info >= (3, 8):
-            print("Warning: DLL directory not added automatically for Python versions below 3.8. Make sure the DLLs are accessible.")
-        else:
-            if self.dll_path and self.dll_path != ".":
-                if not os.path.isdir(self.dll_path):
-                    raise FileNotFoundError(f"DMBMC Error: specified DLL directory {self.dll_path} does not exist. Use the 'dll_path' argument to specify a different path. ")
-                os.add_dll_directory(self.dll_path)
+
         try:
             from scanImaging.instrument.dmc import bmc
             self.bmc=bmc
+
         except ImportError as e:
             message_err=f"DMBMC Error: could not import bmc module. Make sure the Boston Micromachines SDK is installed and the DLLs are accessible. Original error: {e}"
             raise ImportError(message_err)
