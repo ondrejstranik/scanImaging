@@ -20,7 +20,7 @@ class ScanImaging():
         from scanImaging.instrument.bHScannerProcessor import BHScannerProcessor
         from scanImaging.gui.flimViewerGUI import FlimViewerGUI
         from scanImaging.gui.scannerBHGUI import ScannerBHGUI
-        from scanImaging.instrument.dmc.DMBmc import DMBmc
+        from scanImaging.instrument.DMBmc import DMBmc
         from scanImaging.gui.dmGui import DMGui
         from viscope.gui.cameraViewGUI import CameraViewGUI
         import time
@@ -98,6 +98,6 @@ class ScanImaging():
         bhScanner.disconnect()
 
 if __name__ == "__main__":
-    ScanImaging.runVirtual()
-#    ScanImaging.runReal()
+#    ScanImaging.runVirtual()
+    ScanImaging.runReal()
 

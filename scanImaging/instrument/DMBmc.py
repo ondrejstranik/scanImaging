@@ -76,7 +76,11 @@ class DMBmc(BaseSLM):
         if cls.dll_path:
             cls._load_dll()
 
-        cls.bmc = importlib.import_module("bmc")
+        try:
+          cls.bmc = importlib.import_module("bmc.bmc")
+        except ImportError as e:
+            message_err=f"DMBMC Error: could not import bmc module. Make sure the Boston Micromachines SDK is installed and the DLLs are accessible. Original error: {e}"
+            raise ImportError(message_err)
         cls._dll_loaded = True
     
     def __init__(self,name=DEFAULT['name'], **kwargs):
@@ -106,16 +110,6 @@ class DMBmc(BaseSLM):
         self.matlab_calibration_file="C:\Program Files\Boston Micromachines\Calibration\Sample_Multi_OLC1_CAL.mat"
         if kwargs.get('calibration_file'):
             self.matlab_calibration_file=kwargs.get('calibration_file')
-
-        try:
-            from scanImaging.instrument.dmc import bmc
-            self.bmc=bmc
-
-        except ImportError as e:
-            message_err=f"DMBMC Error: could not import bmc module. Make sure the Boston Micromachines SDK is installed and the DLLs are accessible. Original error: {e}"
-            raise ImportError(message_err)
-
-
 
     def connect(self, serial_number='MultiUSB000', **kwargs):
         ''' connect to the instrument '''
