@@ -48,7 +48,9 @@ class DMBmc(BaseSLM):
              'monitor': 1} 
     # library loading management
     # class level variables to ensure DLLs are loaded only once
-    dll_path = None       
+    dll_path = r"C:\Program Files\Boston Micromachines\Bin64"       
+    matlab_calibration_file="C:\Program Files\Boston Micromachines\Calibration\Sample_Multi_OLC1_CAL.mat"
+    _lib_name = "bmc.bmc"
     _dll_loaded = False
     bmc = None
 
@@ -63,7 +65,7 @@ class DMBmc(BaseSLM):
                 os.add_dll_directory(cls.dll_path)
 
     @classmethod
-    def set_dll_path(cls, path):
+    def _set_dll_path(cls, path):
         if cls._dll_loaded:
             raise RuntimeError("DLL path must be set before loading the extension module")
         cls.dll_path = path
@@ -77,7 +79,7 @@ class DMBmc(BaseSLM):
             cls._load_dll()
 
         try:
-          cls.bmc = importlib.import_module("bmc.bmc")
+          cls.bmc = importlib.import_module(cls._lib_name)
         except ImportError as e:
             message_err=f"DMBMC Error: could not import bmc module. Make sure the Boston Micromachines SDK is installed and the DLLs are accessible. Original error: {e}"
             raise ImportError(message_err)
@@ -99,15 +101,16 @@ class DMBmc(BaseSLM):
 
         self.monitor = kwargs['monitor'] if 'monitor' in kwargs else DMBmc.DEFAULT['monitor']
 
-        dll_path = r"C:\Program Files\Boston Micromachines\Bin64"
+        if kwargs.get('lib_name'):
+            self._lib_name=kwargs.get('lib_name')
+
+        dll_path = self.dll_path
         if kwargs.get('dll_path'):
             dll_path=kwargs.get('dll_path')
         if not self._dll_loaded:
-            self.set_dll_path(dll_path)
+            self._set_dll_path(dll_path)
         self._ensure_loaded()
 
-
-        self.matlab_calibration_file="C:\Program Files\Boston Micromachines\Calibration\Sample_Multi_OLC1_CAL.mat"
         if kwargs.get('calibration_file'):
             self.matlab_calibration_file=kwargs.get('calibration_file')
 
@@ -159,6 +162,11 @@ class DMBmc(BaseSLM):
         
     def report(self):
         return self.dm.error_string(self.dm.get_status())
+    
+    def error_to_exception(self):
+        if self.err_code:
+            raise Exception(self.dm.error_string(self.err_code))
+
 
     def load_matlab_calibration(self, filename):
         self._set_error_code(self.dm.load_calibration_file(filename))
@@ -214,31 +222,27 @@ class DMBmc(BaseSLM):
         self._set_error_code(err_code)
         self.image=image_from_surface(self.surface,self.width,self.width)
 
+    def get_piston_range(self):
+        err_code, minPiston, maxPiston = self.dm.get_segment_range(0, self.bmc.DM_Piston, 0, 0, 0, True);
+        self._set_error_code(err_code)
+        return minPiston, maxPiston
+    
+
 
 if __name__ == '__main__':
     import time
     dm=DMBmc()
     dm.connect(serial_number='17DW008#094')
+    dm.error_to_exception()
     print('BMC report:', dm.report())
-    err_code, minPiston, maxPiston = dm.dm.get_segment_range(0, dm.bmc.DM_Piston, 0, 0, 0, True);
-    if err_code:
-        raise Exception(dm.error_string(err_code))
+    minPiston, maxPiston = dm.get_segment_range(0, dm.bmc.DM_Piston, 0, 0, 0, True);
+    dm.error_to_exception()
     print('DM Piston range: %f to %f nm' % (minPiston, maxPiston))
     Zernike_coefficients = [ 0, 0, 0, 0, 0, 0 ]
     w = dm.dm.num_actuators_width()    # 12 for Multi, 13 for Multi-C
     # Add 200nm RMS of defocus
     Zernike_coefficients[4] = 200
-    surface = dm.bmc.DoubleVector(w*w)
-    err_code, surface = dm.dm.zernike_surface(Zernike_coefficients, 0, 0)
-    #print(np.asarray(surface).reshape(w,w))
-    if err_code:
-        raise Exception(dm.dm.error_string(err_code))
-    err_code = dm.dm.set_surface(surface, w, w)
-    if err_code:
-        raise Exception(dm.dm.error_string(err_code))
-    time.sleep(2)
-
-    dm.set_phase_map_from_zernike([0,0,0,0,100])
+    dm.set_phase_map_from_zernike(Zernike_coefficients)
     dm.display_surface()
     print('BMC report after setting Zernike:', dm.report())
     print('Current error:', dm.report_last_error() )
