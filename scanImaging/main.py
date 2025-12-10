@@ -98,6 +98,6 @@ class ScanImaging():
         bhScanner.disconnect()
 
 if __name__ == "__main__":
-#    ScanImaging.runVirtual()
-    ScanImaging.runReal()
+    ScanImaging.runVirtual()
+#    ScanImaging.runReal()
 

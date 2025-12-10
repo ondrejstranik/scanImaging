@@ -7,7 +7,7 @@ import napari
 #from hmflux.gui.slmViewer import SLMViewer
 from magicgui import magicgui
 import numpy as np
-from qtpy.QtWidgets import QLineEdit, QSizePolicy
+from qtpy.QtWidgets import QLineEdit, QSizePolicy, QPushButton, QVBoxLayout
 from viscope.gui.napariViewer.napariViewer import NapariViewer
 
 
@@ -124,7 +124,7 @@ class DMGui(BaseGUI):
         # add widget parameterCameraGui 
         self.parameterDMGUI = parameterDMGUI
         # - os - self.dw = self.vWindow.addParameterGui(self.parameterDMGUI,name=self.DEFAULT['liveUpdate'])
-        self.dw = self.viewer.window.add_dock_widget(self.parameterDMGUI, name=self.DEFAULT['liveUpdate'], area='bottom')
+        self.dw = self.viewer.window.add_dock_widget(self.parameterDMGUI, name=self.DEFAULT['liveUpdate'], area='right')
         if self.dockWidgetParameter is not None:
             self.viewer.window._qt_window.tabifyDockWidget(self.dockWidgetParameter,self.dw)
         # remember this dock immediately so subsequent tabify uses a valid dock
@@ -141,7 +141,7 @@ class DMGui(BaseGUI):
         self.updateNow = updateNow
         # add the button to the same parameters area so it appears under the checkbox
         # - os - self.vWindow.addParameterGui(self.updateNow, name=self.DEFAULT['updateNow'])
-        self.dw = self.viewer.window.add_dock_widget(self.updateNow, name=self.DEFAULT['updateNow'], area='bottom')
+        self.dw = self.viewer.window.add_dock_widget(self.updateNow, name=self.DEFAULT['updateNow'], area='right')
         if self.dockWidgetParameter is not None:
             self.viewer.window._qt_window.tabifyDockWidget(self.dockWidgetParameter,self.dw)
         self.dockWidgetParameter = self.dw
@@ -162,10 +162,135 @@ class DMGui(BaseGUI):
             self.generateImage()
         self.zernikeGui = zernikeGui
         # self.dw =self.vWindow.addParameterGui(self.zernikeGui,name=self.DEFAULT['zernikeGui'])
-        self.dw = self.viewer.window.add_dock_widget(self.zernikeGui,name=self.DEFAULT['zernikeGui'], area='bottom')
+        self.dw = self.viewer.window.add_dock_widget(self.zernikeGui,name=self.DEFAULT['zernikeGui'], area='right')
         if self.dockWidgetParameter is not None:
             self.viewer.window._qt_window.tabifyDockWidget(self.dockWidgetParameter,self.dw)
         self.dockWidgetParameter = self.dw
+        # add an alternative gui to provide sliders for the most common zernike modes
+        # a button is added to set to default 0 values
+        @magicgui(
+    auto_call=True,
+    zernike_4={"widget_type": "FloatSlider", "label": "Zernike 4 (Defocus)", "min": -1000.0, "max": 1000.0},
+    zernike_5={"widget_type": "FloatSlider", "label": "Zernike 5 (Astigmatism 45)", "min": -1000.0, "max": 1000.0},
+    zernike_6={"widget_type": "FloatSlider", "label": "Zernike 6 (Astigmatism 0)", "min": -1000.0, "max": 1000.0},
+    zernike_7={"widget_type": "FloatSlider", "label": "Zernike 7 (Coma Y)", "min": -500.0, "max": 500.0},
+    zernike_8={"widget_type": "FloatSlider", "label": "Zernike 8 (Coma X)", "min": -500.0, "max": 500.0},
+    zernike_9={"widget_type": "FloatSlider", "label": "Zernike 9 (Trefoil Y)", "min": -500.0, "max": 500.0},
+    zernike_10={"widget_type": "FloatSlider", "label": "Zernike 10 (Trefoil X)", "min": -500.0, "max": 500.0},
+    zernike_11={"widget_type": "FloatSlider", "label": "Zernike 11 (Spherical)", "min": -500.0, "max": 500.0},
+)
+        def zernikeSlidersGui(
+                zernike_4: float = 0.0,
+                zernike_5: float = 0.0,
+                zernike_6: float = 0.0,
+                zernike_7: float = 0.0,
+                zernike_8: float = 0.0,
+                zernike_9: float = 0.0,
+                zernike_10: float = 0.0,
+                zernike_11: float = 0.0,
+            ):
+            # if the "Set Defaults" button was pressed, call this function again
+            # with all sliders set to zero and set_defaults=False to avoid recursion.
+            # ensure zernikeCoeffs large enough
+            max_index = 11
+            if len(self.zernikeCoeffs) < max_index + 1:
+                new_coeffs = np.zeros(max_index + 1)
+                new_coeffs[:len(self.zernikeCoeffs)] = self.zernikeCoeffs
+                self.zernikeCoeffs = new_coeffs
+
+            # write slider values into the coeff array
+            self.zernikeCoeffs[4] = zernike_4
+            self.zernikeCoeffs[5] = zernike_5
+            self.zernikeCoeffs[6] = zernike_6
+            self.zernikeCoeffs[7] = zernike_7
+            self.zernikeCoeffs[8] = zernike_8
+            self.zernikeCoeffs[9] = zernike_9
+            self.zernikeCoeffs[10] = zernike_10
+            self.zernikeCoeffs[11] = zernike_11
+
+            # update image
+            self.generateImage()
+
+        self.zernikeSlidersGui = zernikeSlidersGui
+        self.dw = self.viewer.window.add_dock_widget(self.zernikeSlidersGui, name="Zernike Sliders", area='right')
+        if self.dockWidgetParameter is not None:
+            self.viewer.window._qt_window.tabifyDockWidget(self.dockWidgetParameter, self.dw)
+        self.dockWidgetParameter = self.dw
+
+        # add a native Qt "Set Defaults" button into the same widget (same tab)
+        try:
+            native = self.zernikeSlidersGui.native  # the QWidget that magicgui created
+            # create the button as a child of the native widget
+            btn = QPushButton("Set Defaults", native)
+
+            def _reset_sliders():
+                # Try to update magicgui widget values (this updates the visible sliders)
+                names = (
+                    "zernike_4", "zernike_5", "zernike_6", "zernike_7",
+                    "zernike_8", "zernike_9", "zernike_10", "zernike_11",
+                )
+                updated = False
+                for n in names:
+                    try:
+                        w = getattr(self.zernikeSlidersGui, n)  # magicgui exposes parameter widgets as attributes
+                        # some widget wrappers use .value, others .value or .native.value — try common patterns
+                        if hasattr(w, "value"):
+                            w.value = 0.0
+                        elif hasattr(w, "set_value"):
+                            w.set_value(0.0)
+                        else:
+                            # try underlying native widget (Qt)
+                            native = getattr(w, "native", None)
+                            if native is not None and hasattr(native, "setValue"):
+                                native.setValue(0.0)
+                        updated = True
+                    except Exception:
+                        # ignore missing/unsupported widget and continue
+                        pass
+
+                if not updated:
+                    # fallback: call the magicgui callable with kwargs (may update internal values)
+                    try:
+                        self.zernikeSlidersGui(
+                            zernike_4=0.0,
+                            zernike_5=0.0,
+                            zernike_6=0.0,
+                            zernike_7=0.0,
+                            zernike_8=0.0,
+                            zernike_9=0.0,
+                            zernike_10=0.0,
+                            zernike_11=0.0,
+                        )
+                    except Exception:
+                        pass
+
+                # ensure internal coeffs and image are updated
+                # write zeros to coeff array explicitly (keeps internal state consistent)
+                max_index = 11
+                if len(self.zernikeCoeffs) < max_index + 1:
+                    new_coeffs = np.zeros(max_index + 1)
+                    new_coeffs[:len(self.zernikeCoeffs)] = self.zernikeCoeffs
+                    self.zernikeCoeffs = new_coeffs
+                self.zernikeCoeffs[4:12] = 0.0
+
+                # regenerate image and update device preview if needed
+                self.generateImage()
+
+            btn.clicked.connect(_reset_sliders)
+
+            # try to append the button to the existing layout
+            layout = native.layout()
+            if layout is not None:
+                layout.addWidget(btn)
+            else:
+                # if no layout exists, create a simple vertical layout and add button
+                vlay = QVBoxLayout(native)
+                vlay.addWidget(btn)
+                native.setLayout(vlay)
+        except Exception:
+            # non-Qt backend or unexpected widget structure: ignore and continue
+            pass
+
         self.vWindow.addMainGUI(self.viewer.window._qt_window, name=self.DEFAULT['nameGUI']) 
 
 
