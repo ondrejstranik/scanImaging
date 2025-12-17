@@ -94,6 +94,9 @@ class BHScannerProcessor(BaseProcessor):
         super().disconnect()
         #self.flagToProcess.set() 
 
+    def fullAccumulatedImageObtained(self):
+        ''' check if full accumulated image was recorded '''
+        return self.flagFullAccumulation
 
     def setParameter(self,name, value):
         ''' set parameter of the spectral camera'''

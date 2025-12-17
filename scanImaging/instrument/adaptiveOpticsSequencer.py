@@ -3,6 +3,38 @@ from viscope.instrument.base.baseSequencer import BaseSequencer
 from pathlib import Path
 import numpy as np
 import keyboard
+import time
+
+
+class ScannerImageProvider:
+    ''' class for providing images from the scanner'''
+
+    def __init__(self):
+        self.scanner_device = None
+        self.processor = None
+        self.failed_acquisitions = 0
+        self.timeout_seconds = 120
+        self.continous_acquisition = False
+
+    def getImage(self):
+        if self.scanner_device is None or self.processor is None:
+            raise Exception("Scanner device or processor not set in ScannerImageProvider.")
+        self.processor.resetCounter()
+        if not self.continous_acquisition:
+            self.scanner_device.stopAcquisition()
+            self.scanner_device.startAcquisition()
+        # wait until the fullAccumulatedImageObtained is True or timeout
+        start_time = time.time()
+        while not self.processor.fullAccumulatedImageObtained():
+            if self.timeout_seconds > 0 and time.time() - start_time > self.timeout_seconds:
+                self.failed_acquisitions += 1
+                raise TimeoutError("Timeout while waiting for full accumulated image.")
+            time.sleep(0.2)
+        if not self.continous_acquisition:
+            self.scanner_device.stopAcquisition()
+        image = self.scanner_device.getLatestImage()
+        self.scanner_device.new_image_available = False
+        return image
 
 class AdaptiveOpticsSequencer(BaseSequencer):
 
@@ -21,7 +53,7 @@ class AdaptiveOpticsSequencer(BaseSequencer):
         self.recorded_image_folder= "Data/AdaptiveOptics"
         self.optim_iterations=3
         self.optim_method='simple_interpolation'  # other methods can be implemented
-        self.initial_zernike_indices=[5,12,3]
+        self.initial_zernike_indices=[4,11,2]  # defocus, astigmatism, spherical
         self.zernike_initial_coefficients_nm=[50,30,20]
         self.zernike_amplitude_scan_nm=[20,15,10]
         self.num_steps_per_mode=5
@@ -57,26 +89,39 @@ class AdaptiveOpticsSequencer(BaseSequencer):
         if name== 'dm_display':
             return self.dm_display
         
-    def computeOptimalParametersSimpleInterpolation(image_stack,parameter_stack,optim_metric):
-        if len(image_stack) != len(parameter_stack) or len(image_stack)<1:
+    def computeOptimalParametersSimpleInterpolation(self,image_stack,parameter_stack,optim_metric):
+        if len(image_stack) != len(parameter_stack) or len(image_stack)<3:
             raise ValueError("Image stack and parameter stack must have the same non-zero length.")
         # take metic for each image in the stack
         metric_values = [optim_metric(img) for img in image_stack]
         # try a simple quadratic interpolation around the maximum
         max_index = np.argmax(metric_values)
+        miss_max=0
         # handle edge cases (max at the boundaries)
-        if max_index == 0 or max_index == len(metric_values) - 1:
-            optimal_parameter = parameter_stack[max_index]
-        else:
-            # perform quadratic interpolation
-            x0, x1, x2 = parameter_stack[max_index - 1], parameter_stack[max_index], parameter_stack[max_index + 1]
-            y0, y1, y2 = metric_values[max_index - 1], metric_values[max_index], metric_values[max_index + 1]
-            denom = (y0 - 2 * y1 + y2)
-            if denom == 0:
-                optimal_parameter = x1
-            else:   
-                optimal_parameter = x1 + 0.5 * ((y0 - y2) / denom) * (x2 - x0) / 2
-        return optimal_parameter
+        if max_index == 0:
+            miss_max=-1
+        if max_index == len(metric_values) - 1:
+            miss_max=1
+            max_index -= 1  # shift to allow interpolation
+
+        # perform quadratic interpolation
+        x0, x1, x2 = parameter_stack[max_index - 1], parameter_stack[max_index], parameter_stack[max_index + 1]
+        y0, y1, y2 = metric_values[max_index - 1], metric_values[max_index], metric_values[max_index + 1]
+        # general formula for the vertex of a parabola given three points (not equally spaced)
+        yd1=(y1-y0)
+        yd2=(y2-y1)
+        xd1=(x1-x0)
+        xd2=(x2-x1)
+        denom = yd1*xd2-yd2*xd1
+#           equally spaced: 
+        #denom = (y0 - 2 * y1 + y2)
+        if denom == 0:
+            optimal_parameter = x1
+        else:   
+        # equally spaced    
+            #   optimal_parameter = x1 + 0.5 * ((y0 - y2) / denom) * (x2 - x0) / 2
+            optimal_parameter = x1 + 0.5 * (yd1*xd2*xd2 + yd2*xd1*xd1) / denom
+        return optimal_parameter,miss_max
 
         
     def loop(self):
@@ -134,3 +179,16 @@ class AdaptiveOpticsSequencer(BaseSequencer):
 
         np.save(self.recorded_image_folder + '/' + 'imageSet',imageSet)
         np.save(self.recorded_image_folder + '/' + 'parameterSet',parameter_set)
+
+
+if __name__ == "__main__":
+    sequencer = AdaptiveOpticsSequencer()
+    f=lambda x: -3.0*(x-1)**2 +2.0
+    xv=[0.0,0.5,1.0,1.5,2.0]
+    yv=[f(x) for x in xv]
+    opt,miss=sequencer.computeOptimalParametersSimpleInterpolation(yv,xv,lambda x: x)
+    print("Test completed, optimal value:", opt, " expected: 1.0", " miss:", miss)
+    f=lambda x: -3.0*(x-10)**2 +2.0
+    yv=[f(x) for x in xv]
+    opt,miss=sequencer.computeOptimalParametersSimpleInterpolation(yv,xv,lambda x: x)
+    print("Test completed, optimal value:", opt, " expected: 10.0", " miss:", miss)
