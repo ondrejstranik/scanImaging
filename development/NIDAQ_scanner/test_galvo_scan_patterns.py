@@ -21,6 +21,13 @@ import time
 import numpy as np
 from safe_scan_pattern import safe_scan_pattern
 
+def periodic_gradient(x, dt):
+    return (np.roll(x, -1) - np.roll(x, 1)) / (2 * dt)
+
+def periodic_second_gradient(x, dt):
+    return (np.roll(x, -1) - 2*x + np.roll(x, 1)) / (dt**2)
+
+
 # User parameters (tweak to your hardware / needs)
 V_RANGE = 5.0                  # ± voltage range visible in UI (not enforced by device)
 RATE = 10000                    # samples per second for AO streaming
@@ -31,8 +38,12 @@ SLEEP_POLL = 0.05              # poll interval while waiting for key press
 # add hard coded Galvo limits to prevent overdriving
 GALVO_V_MIN = -10.0
 GALVO_V_MAX = 10.0
-GALVO_MAX_DERIVATIVE_V_PER_S = 1000.0  # max allowed slew rate (V/s)
-GALVO_MAX_FREQUENCY_HZ = 50.0         # max allowed frequency (Hz)
+# galvo limits: specs for Thorlabs GVS002 galvo scanner sine wave with 250 Hz frequency at full (+/-10 V) amplitude
+# vmax=2 pi f A = 2 * pi * 250 Hz * 10 V = 15.707 V/ms
+# amax=(2 pi f)^2 A = (2 * pi * 250 Hz)^2 * 10 V = 24,674 V/ms²
+GALVO_MAX_DERIVATIVE_V_PER_S = 15707  # max allowed slew rate (V/s)
+GALVO_MAX_SECOND_DERIVATIVE_V_PER_S_SQUARED = 2.4674e7  # max allowed acceleration (V/s²) (10 V/ms²)
+GALVO_MAX_FREQUENCY_HZ = 250.0         # max allowed frequency (Hz)
 # GVS002 RECOMMENDED LIMITS (adjust if needed)
 #SAFE_MAX_SCAN_RATE = 150        # Hz at full amplitude
 #SAFE_MAX_DVDT = 5_000           # V/ms = 5 V/ms
@@ -49,7 +60,7 @@ def generate_safe_raster_pattern(
     flyback_frame_frac: float,
     bidirectional: bool = True,
 ) -> np.ndarray:    
-    t,x,y = safe_scan_pattern(
+    t,x,y, pixel_gate, line_trig, frame_trig = safe_scan_pattern(
         fs=int(rate),
         nx=pixels_x,
         ny=pixels_y,
@@ -241,7 +252,7 @@ def plot_pattern(x, y, interval_ms=10):
     plt.legend()
     plt.show()
 
-def plot_pattern_xy(pattern: np.ndarray):
+def plot_pattern_xy(pattern: np.ndarray,rate: float):
     """Plot the given pattern using matplotlib."""
     try:
         import matplotlib.pyplot as plt
@@ -250,7 +261,7 @@ def plot_pattern_xy(pattern: np.ndarray):
         return
         # plot x and y channels separately
     import matplotlib.pyplot as plt
-    fig, axs = plt.subplots(3, 1, figsize=(8, 6))
+    fig, axs = plt.subplots(4, 1, figsize=(8, 6))
     axs[0].plot(pattern[:, 0], label="X channel")
     axs[0].set_title("X Channel Waveform")
     axs[0].set_ylabel("Voltage (V)")
@@ -263,13 +274,21 @@ def plot_pattern_xy(pattern: np.ndarray):
     axs[1].grid(True)
     axs[1].legend()
     # add a plot with the x and y derivatives
-    axs[2].plot(np.diff(pattern[:, 0]), label="X derivative", color="blue")
-    axs[2].plot(np.diff(pattern[:, 1]), label="Y derivative", color="green")
+    axs[2].plot(periodic_gradient(pattern[:, 0], 1/rate), label="X derivative", color="blue")
+    axs[2].plot(periodic_gradient(pattern[:, 1], 1/rate), label="Y derivative", color="green")
     axs[2].set_title("Derivatives (X and Y)")
     axs[2].set_ylabel("Voltage derivatives (V/s)")
     axs[2].set_xlabel("Sample Index")
     axs[2].grid(True)
     axs[2].legend()
+    # add also a plot with the acceleration
+    axs[3].plot(periodic_second_gradient(pattern[:, 0], 1/rate), label="X acceleration", color="cyan")
+    axs[3].plot(periodic_second_gradient(pattern[:, 1], 1/rate), label="Y acceleration", color="magenta")
+    axs[3].set_title("Accelerations (X and Y)")
+    axs[3].set_ylabel("Voltage acceleration (V/s²)")
+    axs[3].set_xlabel("Sample Index")
+    axs[3].grid(True)
+    axs[3].legend()
     plt.tight_layout()
     plt.show()
 
@@ -309,6 +328,7 @@ def compute_pattern_metrics(pattern: np.ndarray, rate: float):
             res[f"{axis_name}_peak_to_peak"] = 0.0
             res[f"{axis_name}_frequency_hz"] = 0.0
             res[f"{axis_name}_max_abs_derivative"] = 0.0
+            res[f"{axis_name}_max_abs_second_derivative"] = 0.0
             continue
 
         vmin = float(axis.min())
@@ -328,6 +348,17 @@ def compute_pattern_metrics(pattern: np.ndarray, rate: float):
             res[f"{axis_name}_max_abs_derivative"] = float(_np.nanmax(deriv))
         else:
             res[f"{axis_name}_max_abs_derivative"] = 0.0
+        # Numerical second derivative (V/s²) including wrap-around
+        if axis.size >= 3:  
+            d2v_linear = _np.diff(axis, n=2)
+            # wrap second differences
+            d2v_wrap_1 = axis[1] - 2 * axis[0] + axis[-1]
+            d2v_wrap_2 = axis[0] - 2 * axis[-1] + axis[-2]
+            d2v_all = _np.concatenate((d2v_linear, _np.atleast_1d(d2v_wrap_1), _np.atleast_1d(d2v_wrap_2)))
+            second_deriv = _np.abs(d2v_all) * (float(rate) ** 2)  # delta²V / deltaT² where deltaT=1/rate
+            res[f"{axis_name}_max_abs_second_derivative"] = float(_np.nanmax(second_deriv))
+        else:
+            res[f"{axis_name}_max_abs_second_derivative"] = 0.0
 
         # Frequency via threshold crossings (robust, circular)
         if vmin == vmax or axis.size < 3:
@@ -393,9 +424,10 @@ def print_pattern_metrics(pattern: np.ndarray, rate: float):
     # pretty print
     print("Pattern metrics:")
     print(f"  X: min={m['X_min']:.4g}  max={m['X_max']:.4g}  p2p={m['X_peak_to_peak']:.4g}  "
-          f"freq={m['X_frequency_hz']:.3f} Hz  max|dV/dt|={m['X_max_abs_derivative']:.4g} V/s")
+          f"freq={m['X_frequency_hz']:.3f} Hz  max|dV/dt|={m['X_max_abs_derivative']:.4g} V/s  max|d²V/dt²|={m['X_max_abs_second_derivative']:.4g} V/s²")
     print(f"  Y: min={m['Y_min']:.4g}  max={m['Y_max']:.4g}  p2p={m['Y_peak_to_peak']:.4g}  "
-          f"freq={m['Y_frequency_hz']:.3f} Hz  max|dV/dt|={m['Y_max_abs_derivative']:.4g} V/s")
+          f"freq={m['Y_frequency_hz']:.3f} Hz  max|dV/dt|={m['Y_max_abs_derivative']:.4g} V/s  max|d²V/dt²|={m['Y_max_abs_second_derivative']:.4g} V/s²")
+    print(f"time to complete pattern: {len(pattern)/rate:.3f} s")
     return m
 
 def check_if_exceeds_limits(pattern: np.ndarray, rate: float) -> bool:
@@ -418,6 +450,9 @@ def check_if_exceeds_limits(pattern: np.ndarray, rate: float) -> bool:
         if freq > GALVO_MAX_FREQUENCY_HZ:
             print(f"Error: {axis_name} channel exceeds max frequency limit ({freq:.2f} Hz).")
             exceeds = True
+        if m[f"{axis_name}_max_abs_second_derivative"] > GALVO_MAX_SECOND_DERIVATIVE_V_PER_S_SQUARED:
+            print(f"Error: {axis_name} channel exceeds max second derivative limit ({m[f'{axis_name}_max_abs_second_derivative']:.2f} V/s²).")
+            exceeds = True  
 
     return exceeds
 
@@ -444,24 +479,23 @@ def main():
         'rasterU': generate_safe_raster_pattern(
     rate=RATE,
     fov_voltage=V_RANGE,
-    pixels_x=600,
-    pixels_y=20,
+    pixels_x=512,
+    pixels_y=512,
     line_rate=80,  # 100 lines per second
-    flyback_frac=0.3,
+    flyback_frac=0.7,
     flyback_frame_frac=0.05,
     bidirectional=False
     ),
     'rasterB': generate_safe_raster_pattern(
     rate=RATE,
-    fov_voltage=V_RANGE,
-    pixels_x=600,
-    pixels_y=100,
-    line_rate=100,  # 100 lines per second
+    fov_voltage=4,
+    pixels_x=512,
+    pixels_y=10,# 512
+    line_rate=30,#250
     flyback_frac=0.1,
-    flyback_frame_frac=0.05,
+    flyback_frame_frac=20/512, #1.5/512
     bidirectional=True
-    ),
-        'raster_smooth': make_raster_sine(samples_per_line=200, lines_per_frame=50, v_range=V_RANGE, turnaround_points=50),
+    )
     }
 # make_raster(samples_per_line=100, lines_per_frame=100, v_range=V_RANGE),
     print("Parameters:")
@@ -481,7 +515,7 @@ def main():
     current = 'circle'
     while choice.startswith('d'):
         # interactive display selection (works even without nidaqmx)
-        print("Select pattern to display: 's'=square, 'c'=circle, 'x'=cross, 'r'=raster, 'l'=smooth raster")
+        print("Select pattern to display: 's'=square, 'c'=circle, 'x'=cross, 'u'=raster unidirectional, 'b'=raster bidirectional")
         sel = input("Choice: ").strip().lower()
         if sel == 's':
             patt = pattern_map['square']
@@ -489,8 +523,6 @@ def main():
             patt = pattern_map['circle']
         elif sel == 'x':
             patt = pattern_map['cross']
-        elif sel == 'l':
-            patt = pattern_map['raster_smooth']
         elif sel == 'u':
             patt = pattern_map['rasterU']
         elif sel == 'b':
@@ -501,8 +533,8 @@ def main():
 
         x, y = patt.T
         print_pattern_metrics(patt, RATE)
-        plot_pattern_xy(patt)
-        plot_pattern(x, y)
+        plot_pattern_xy(patt,RATE)
+        plot_pattern(x, y, interval_ms=10*1000.0 / RATE)
         if check_if_exceeds_limits(patt, RATE):
             print("Pattern exceeds galvo limits. Do not stream this pattern to hardware.")
         # after display, ask whether to continue to streaming
@@ -568,11 +600,11 @@ def main():
                             if keyboard.is_pressed('x'):
                                 next_pattern = 'cross'
                                 break
-                            if keyboard.is_pressed('r'):
-                                next_pattern = 'raster'
+                            if keyboard.is_pressed('u'):
+                                next_pattern = 'raster_unidirectional'
                                 break
-                            if keyboard.is_pressed('l'):
-                                next_pattern = 'raster_smooth'
+                            if keyboard.is_pressed('b'):
+                                next_pattern = 'raster_bidirectional'
                                 break
                             if keyboard.is_pressed('q'):
                                 next_pattern = None

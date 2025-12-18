@@ -47,6 +47,17 @@ def _safe_num_points(n: int) -> int:
     return max(1, int(n))
 
 
+#fs = 100_000
+# 50kHz to 150 kHz -- above 150kHz not needed. Safe for DAQ (USB-6421) 200 kS/s 
+#nx = 128 to 2048
+#ny = 64  to 1024
+#line_rate = 10 to 20
+#x_amp = 1.5 to 2.5
+#y_amp = 1.5 to 2.5
+#x_flyback_frac = 0.15 to 0.25
+#bidirectional = False (first tests)
+
+
 def safe_scan_pattern(
     fs: float = 100_000,
     nx: int = 256,
@@ -109,6 +120,9 @@ def safe_scan_pattern(
 
     x_segments = []
     y_segments = []
+    pixel_segments = []
+    line_segments = []
+    frame_segments = []
 
     for i in range(ny):
         y0 = float(y_vals[i])
@@ -126,6 +140,15 @@ def safe_scan_pattern(
             else:
                 x_act = +x_amp - vx * t_act
         y_act = np.full_like(x_act, y0, dtype=float)
+        pixel_act = np.ones(n_act, dtype=np.uint8)
+        line_act = np.zeros(n_act, dtype=np.uint8)
+        frame_act = np.zeros(n_act, dtype=np.uint8)
+
+        # Line trigger at first active pixel
+        line_act[0] = 1
+        if i == 0:
+            frame_act[0] = 1
+
 
         # Flyback segment: smooth transition to next X start and next Y
         # For the final line we may use T_yfly (frame-level Y flyback)
@@ -174,23 +197,36 @@ def safe_scan_pattern(
         s = np.linspace(0.0, 1.0, fly_n, endpoint=False, dtype=float)
         y_fly = y0 + (y1 - y0) * smooth_step_cos(s)
 
+        #add gating signals (1 during active, 0 during flyback)
+        pixel_fly = np.zeros(fly_n, dtype=np.uint8)
+        line_fly = np.zeros(fly_n, dtype=np.uint8)
+        frame_fly = np.zeros(fly_n, dtype=np.uint8)
+
         # Concatenate active + flyback for this line
         x_segments.append(np.concatenate([x_act, x_fly]))
         y_segments.append(np.concatenate([y_act, y_fly]))
+        pixel_segments.append(np.concatenate([pixel_act, pixel_fly]))
+        line_segments.append(np.concatenate([line_act, line_fly]))
+        frame_segments.append(np.concatenate([frame_act, frame_fly]))
 
     # Final concatenation across all lines
     x = np.concatenate(x_segments)
     y = np.concatenate(y_segments)
+    pixel_gate = np.concatenate(pixel_segments)
+    line_trig = np.concatenate(line_segments)
+    frame_trig = np.concatenate(frame_segments)
+
     t = np.arange(len(x), dtype=float) / float(fs)
 
-    return t, x, y
+    return t, x, y, pixel_gate, line_trig, frame_trig
+
 
 
 # Quick demo when run as script ------------------------------------------------
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
 
-    t, x, y = safe_scan_pattern(
+    t, x, y, pixel_gate, line_trig, frame_trig = safe_scan_pattern(
         fs=100_000,
         nx=256,
         ny=10,
@@ -205,6 +241,11 @@ if __name__ == "__main__":
     plt.figure(figsize=(10, 4))
     plt.plot(t, x, label="X")
     plt.plot(t, y, label="Y", alpha=0.7)
+    #add also the line triggers
+    plt.plot(t, line_trig * 3.0 - 2.0, label="Line Trigger", linestyle='--', color='gray')
+    plt.plot(t, frame_trig * 3.0 - 2.0, label="Frame Trigger", linestyle='--', color='black')
+    #add also the pixel gate
+    plt.plot(t, pixel_gate * 3.0 - 2.0, label="Pixel Gate", linestyle='--', color='orange')
     plt.legend()
     plt.xlabel("Time [s]")
     plt.ylabel("Voltage [V]")
