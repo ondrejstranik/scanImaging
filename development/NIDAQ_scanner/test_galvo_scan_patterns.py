@@ -478,20 +478,20 @@ def main():
         'cross': make_smooth_cross(size=V_RANGE, points=POINTS),
         'rasterU': generate_safe_raster_pattern(
     rate=RATE,
-    fov_voltage=V_RANGE,
+    fov_voltage=4,
     pixels_x=512,
     pixels_y=512,
-    line_rate=80,  # 100 lines per second
+    line_rate=250,  # 100 lines per second
     flyback_frac=0.7,
-    flyback_frame_frac=0.05,
+    flyback_frame_frac=1.0/512,
     bidirectional=False
     ),
     'rasterB': generate_safe_raster_pattern(
     rate=RATE,
     fov_voltage=4,
     pixels_x=512,
-    pixels_y=10,# 512
-    line_rate=30,#250
+    pixels_y=512,# 512
+    line_rate=300,#250
     flyback_frac=0.1,
     flyback_frame_frac=20/512, #1.5/512
     bidirectional=True
@@ -566,7 +566,7 @@ def main():
             from nidaqmx.constants import AcquisitionType, RegenerationMode
 
             samples = len(pattern)
-            data = np.asarray(pattern, dtype=float).reshape(samples, 2)
+            data = np.asarray(pattern, dtype=float).reshape(samples, 2).T
 
             # show metrics for the pattern about to be streamed
             print_pattern_metrics(pattern, RATE)
@@ -581,9 +581,8 @@ def main():
                     ao_task.out_stream.regen_mode = RegenerationMode.ALLOW_REGENERATION
                 except Exception:
                     pass
-
                 ao_task.write(np.ascontiguousarray(data), auto_start=True)
-                print(f"Now streaming '{current}' (samples={samples}).")
+
 
                 # inner loop polls keyboard to decide whether to switch pattern
                 next_pattern = None
@@ -601,10 +600,10 @@ def main():
                                 next_pattern = 'cross'
                                 break
                             if keyboard.is_pressed('u'):
-                                next_pattern = 'raster_unidirectional'
+                                next_pattern = 'rasterU'
                                 break
                             if keyboard.is_pressed('b'):
-                                next_pattern = 'raster_bidirectional'
+                                next_pattern = 'rasterB'
                                 break
                             if keyboard.is_pressed('q'):
                                 next_pattern = None
