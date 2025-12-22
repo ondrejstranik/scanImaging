@@ -91,6 +91,41 @@ class VirtualBHScanner(BaseADetector):
 
         # linearize the probe
         self.virtualProbeExtra = self.virtualProbeExtra.reshape(-1)
+
+    def setVirtualProbe(self, virtualProbe):
+        ''' set the virtual probe to be scanned '''
+        self.virtualProbe = virtualProbe
+        self._updateProbeExtra()
+        
+    def _updateProbeExtra(self):
+        ''' update the extra probe when the main probe is changed
+          Include also possible probe with several channels'''
+        if self.virtualProbe is None:
+            raise Exception("Virtual probe is not set")
+        # if the proble contains images for each channel
+        if len(self.virtualProbe.shape)==3:
+            if self.virtualProbe.shape[2]!=self.numberOfChannel:
+                raise Exception("Virtual probe channel number mismatch")
+            # loop over all channels and keep the probes each in a separate array
+            for ch in range(self.numberOfChannel):
+                currentvirtualProbeExtra = np.zeros(self.scanSize)
+                currentvirtualProbeExtra[0:self.imageSize[0],0:self.imageSize[1]]= self.virtualProbe[:,:,ch]
+                # double the probe in vertical direction
+                currentvirtualProbeExtra = np.vstack((currentvirtualProbeExtra,currentvirtualProbeExtra))
+                # linearize the probe
+                currentvirtualProbeExtra = currentvirtualProbeExtra.reshape(-1)
+                if ch==0:
+                    self.virtualProbeExtra = np.zeros((self.scanSize[0]*2*self.scanSize[1], self.numberOfChannel))
+                self.virtualProbeExtra[:, ch] = currentvirtualProbeExtra
+            return
+        self.virtualProbeExtra = np.zeros(self.scanSize)
+        self.virtualProbeExtra[0:self.imageSize[0],0:self.imageSize[1]]= self.virtualProbe
+
+        # double the virtual probe. it overcome the indexing issue with scan rolling over 
+        self.virtualProbeExtra = np.vstack((self.virtualProbeExtra,self.virtualProbeExtra))
+
+        # linearize the probe
+        self.virtualProbeExtra = self.virtualProbeExtra.reshape(-1)
         
     def startAcquisition(self):
         '''start detector collecting data in a stack '''
@@ -115,10 +150,12 @@ class VirtualBHScanner(BaseADetector):
         
         if self.acquisitionStopTime is not None:
             currentTime = self.acquisitionStopTime
+        hasvirtualChannels=(len(self.virtualProbe.shape)==3)
 
         if self.acquisitionStopTime == self.lastStackTime:
             virtualStack = None
         else:
+
             # number of sub pixels to generate
             nSubPixel = int((currentTime - self.lastStackTime)*1e-9/self.signalTime)
             newScanPosition = self.scanPosition + nSubPixel
@@ -139,9 +176,14 @@ class VirtualBHScanner(BaseADetector):
                 np.clip(pixelIdx,0,2*(np.prod(self.scanSize)-1),out=pixelIdx)
                 print(f'scanner overfLow!')
 
+            # change this later with different probability depending on the channel (scaled by sum intensity per channel)
+            _channel_events = np.random.randint(0,self.numberOfChannel,len(pixelIdx))
 
             # this probability calculation already contain the the poisson noise
-            _virtualPhoton = (self.virtualProbeExtra[pixelIdx]*np.random.rand(len(pixelIdx))>threshold)*1
+            if hasvirtualChannels:
+                _virtualPhoton = (self.virtualProbeExtra[pixelIdx,_channel_events]*np.random.rand(len(pixelIdx))>threshold)*1
+            else:
+                _virtualPhoton = (self.virtualProbeExtra[pixelIdx]*np.random.rand(len(pixelIdx))>threshold)*1
 
             # macro time + macroTimeFlag generation
             #print(f'time : {(currentTime - self.lastStackTime)}')

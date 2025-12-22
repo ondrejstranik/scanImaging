@@ -66,17 +66,22 @@ class ScanImaging():
         from scanImaging.gui.scannerBHGUI import ScannerBHGUI
         from viscope.gui.cameraViewGUI import CameraViewGUI
         from scanImaging.gui.dmGui import DMGui
+        from scanImaging.instrument.virtual.virtualISM import VirtualISM
         import time
         bhScanner = VirtualBHScanner(name='BHScanner')
         bhScanner.connect()
         bhScanner.setParameter('threadingNow', True)
 
+        VirtualDMBmc=VirtualDMBmc(name='DMBmc')
+        VirtualDMBmc.connect()
+
+        vitualISM=VirtualISM(name='VirtualISM')
+        vitualISM.connect(virtualScanner=bhScanner,virtualAdaptiveOptics=VirtualDMBmc)
+
         bhPro = BHScannerProcessor(name='BHScannerProcessor')
         bhPro.connect(scanner=bhScanner)
         bhPro.setParameter('threadingNow', True)
 
-        VirtualDMBmc=VirtualDMBmc(name='DMBmc')
-        VirtualDMBmc.connect()
 
 
         adGui  = ScannerBHGUI(viscope,vVindow='new')
