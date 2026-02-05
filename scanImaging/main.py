@@ -1,4 +1,5 @@
 
+from json import scanner
 from viscope.main import viscope
 import sys
 # Add the current directory to sys.path
@@ -67,24 +68,51 @@ class ScanImaging():
         from viscope.gui.cameraViewGUI import CameraViewGUI
         from scanImaging.gui.dmGui import DMGui
         from scanImaging.instrument.virtual.virtualISM import VirtualISM
+        from scanImaging.gui.virtualISMGUI import VirtualISMGui
+        from scanImaging.instrument.adaptiveOpticsSequencer import AdaptiveOpticsSequencer
+        from scanImaging.instrument.adaptiveOpticsSequencer import ScannerImageProvider
         import time
+        from PIL import Image
+        import numpy as np
+        
+ 
         bhScanner = VirtualBHScanner(name='BHScanner')
         bhScanner.connect()
         bhScanner.setParameter('threadingNow', True)
 
-        VirtualDMBmc=VirtualDMBmc(name='DMBmc')
-        VirtualDMBmc.connect()
+                # path to your gray PNG
+        p = "/home/georg/0_work/projects_IPHT/adaptive_optics_psf_analysis/ondra_example/scanImaging/scanImaging/instrument/virtual/images/tstimage.png"
+        
+        # load as grayscale
+        img = Image.open(p).convert("L")
+        
+        # get target size from scanner (rows, cols)
+        rows, cols = bhScanner.imageSize  # numpy array or tuple
+        img = img.resize((int(cols), int(rows)), resample=Image.BILINEAR)
+        
+        # to numpy float32 and normalize to [0,1]
+        arr = np.asarray(img, dtype=np.float32)
+        if arr.max() != 0:
+            arr /= arr.max()
+        
+        # if you need multiple channels (must equal scanner.numberOfChannel)
+        # arr = np.repeat(arr[:, :, None], scanner.numberOfChannel, axis=2)
+        
+        # set as virtual probe
+        bhScanner.setVirtualProbe(arr)
 
-        vitualISM=VirtualISM(name='VirtualISM')
-        vitualISM.connect(virtualScanner=bhScanner,virtualAdaptiveOptics=VirtualDMBmc)
+        virtualDMBmc=VirtualDMBmc(name='DMBmc')
+        virtualDMBmc.connect()
 
+        virtualISM=VirtualISM(name='VirtualISM')
+        virtualISM.connect(virtualScanner=bhScanner,virtualAdaptiveOptics=virtualDMBmc)
         bhPro = BHScannerProcessor(name='BHScannerProcessor')
         bhPro.connect(scanner=bhScanner)
         bhPro.setParameter('threadingNow', True)
 
 
 
-        adGui  = ScannerBHGUI(viscope,vVindow='new')
+        adGui  = ScannerBHGUI(viscope,vWindow='new')
         adGui.setDevice(bhScanner,processor=bhPro)
 
         cvGui  = CameraViewGUI(viscope,vWindow='new')
@@ -93,9 +121,20 @@ class ScanImaging():
         fvGui  = FlimViewerGUI(viscope,vWindow='new')
         fvGui.setDevice(bhPro)
 
-        dmGui=DMGui(viscope,vWindow='new')
-        dmGui.setDevice(VirtualDMBmc)
+        scannerImageProvider=ScannerImageProvider(scanner=bhScanner,processor=bhPro)
+        aoSequencer=AdaptiveOpticsSequencer(viscope=viscope,name='AdaptiveOpticsSequencer')
+        aoSequencer.connect(deformable_mirror=virtualDMBmc,image_provider=scannerImageProvider)
 
+        dmGui=DMGui(viscope,vWindow='new')
+        dmGui.setDevice(virtualDMBmc)
+        dmGui.setAdaptiveOpticsSequenceser(aoSequencer)
+
+         # register the virtualISM as dependent to the aoSequencer
+
+        virtualISM.updateImage()
+
+        virtualISMGui=VirtualISMGui(viscope,vWindow='new')
+        virtualISMGui.setDevice(virtualISM)
 
 
         viscope.run()

@@ -97,6 +97,11 @@ class BHScannerProcessor(BaseProcessor):
     def fullAccumulatedImageObtained(self):
         ''' check if full accumulated image was recorded '''
         return self.flagFullAccumulation
+    
+    def getAccumulatedImage(self):
+        ''' get accumulated image 
+         Reduced to  x and y (no time/channel)'''
+        return self.dataCubeFinished.sum(axis=(0,1))
 
     def setParameter(self,name, value):
         ''' set parameter of the spectral camera'''

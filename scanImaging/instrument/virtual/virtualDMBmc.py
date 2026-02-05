@@ -1,6 +1,3 @@
-
-
-
 import numpy as np
 from viscope.instrument.base.baseSLM import BaseSLM
 import scanImaging.algorithm.SimpleZernike as simzern
@@ -49,6 +46,7 @@ class VirtualDMBmc(BaseSLM):
         self.serial_number = None
         self.actuators=None
         self.is_connected = False
+        self._dependents = []
 
     def connect(self, serial_number='MultiUSB000', **kwargs):
         ''' connect to the instrument '''
@@ -100,6 +98,7 @@ class VirtualDMBmc(BaseSLM):
 
     def set_actuators(self, actuator_array):
         self.actuators = actuator_array
+        self._notify_dependents()
 
     def get_actuator_commands(self):
         return self.actuators
@@ -119,21 +118,45 @@ class VirtualDMBmc(BaseSLM):
 
     def display_surface(self):
         print('VirtualDMBmc: display_surface (not implemented)')
+        self._notify_dependents()
 
 
-    def set_phase_map_nm(self,phase_map_nm:np.ndarray):
-        self.image=phase_map_nm
+    def set_phase_map_nm(self, phase_map_nm: np.ndarray):
+        self.image = phase_map_nm
         self._update_surface_from_image()
+        self._notify_dependents()
 
-    def setImage(self,image):
+    def setImage(self, image):
         ''' Alias for consistency with SLM class in other projects, combines set_phase_map_nm and display_surface'''
         self.set_phase_map_nm(image)
         self.display_surface()
+        self._notify_dependents()
 
     def set_phase_map_from_zernike(self, rms_zernike_nm):
         self.surface=FakeDoubleVector(self.width*self.width)
         self.image=simzern.zernike_phase_map(rms_zernike_nm,self.width,self.width,self.active_aperture)
         self._update_surface_from_image()
+
+    def register_dependent(self, device):
+        """Register a dependent device to be notified on DM updates."""
+        if device not in self._dependents:
+            self._dependents.append(device)
+
+    def unregister_dependent(self, device):
+        """Unregister a dependent device."""
+        if device in self._dependents:
+            self._dependents.remove(device)
+
+    def _notify_dependents(self):
+        """Call updateFromDM() on registered dependents if available."""
+        for d in list(self._dependents):
+            try:
+                if hasattr(d, "updateFromDM"):
+                    d.updateFromDM()
+                elif hasattr(d, "updateImage"):
+                    d.updateImage()
+            except Exception as e:
+                print(f"Error notifying dependent {d}: {e}")
 
 
 if __name__ == '__main__':

@@ -82,6 +82,10 @@ class VirtualBHScanner(BaseADetector):
         self.virtualProbe = np.zeros(self.imageSize) +0
         self.virtualProbe[:, int(self.imageSize[0]*0.4):int(self.imageSize[0]*0.6)] = 1
 
+#        _Sample = Sample()
+#        _Sample.setAstronaut(sampleSize=self.imageSize,photonRateMax=100)
+#        self.virtualProbe = _Sample.get()
+
         #  add scan simulation return of the scan 
         self.virtualProbeExtra = np.zeros(self.scanSize)
         self.virtualProbeExtra[0:self.imageSize[0],0:self.imageSize[1]]= self.virtualProbe
@@ -221,7 +225,10 @@ class VirtualBHScanner(BaseADetector):
             # currently only arbitrary
             _numberOfSignal = np.sum(validSignal)
             _microTime = np.random.randint(0,self.timeSize,_numberOfSignal)
-            _channel = np.random.randint(0,self.numberOfChannel,_numberOfSignal)
+            if hasvirtualChannels:
+                _channel = _channel_events[validSignal]
+            else:
+                _channel = np.random.randint(0,self.numberOfChannel,_numberOfSignal)
 
 
             virtualStack = np.vstack([tMacroFlag[validSignal],
