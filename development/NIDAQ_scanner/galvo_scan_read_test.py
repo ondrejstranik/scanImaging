@@ -178,21 +178,24 @@ def galvo_and_triggers_thread(ao_data,do_data,stop_event,pattern_specs=specs_bid
             line_grouping=LineGrouping.CHAN_FOR_ALL_LINES
             )
 
- #           do_task.do_channels.add_do_chan(TRIGGER_LINES, line_grouping=LineGrouping.CHAN_PER_LINE)
-            do_task.timing.cfg_samp_clk_timing(
-                rate=rate,
-                source=SAMPLE_CLOCK,
-                sample_mode=AcquisitionType.CONTINUOUS,
-                samps_per_chan=do_data.shape[0]
-            )
+#            do_task.do_channels.add_do_chan(TRIGGER_LINES, line_grouping=LineGrouping.CHAN_PER_LINE)
+#            do_task.timing.cfg_samp_clk_timing(
+#                rate=rate,
+#                source=SAMPLE_CLOCK,
+#                sample_mode=AcquisitionType.CONTINUOUS,
+#                samps_per_chan=do_data.shape[0]
+#            )
             do_task.triggers.start_trigger.cfg_dig_edge_start_trig(
                 trigger_source=TRIGGER_START, trigger_edge=Edge.RISING
             )
-            ao_task.write(np.ascontiguousarray(ao_data), auto_start=False)
-            do_write = np.ascontiguousarray(do_data, dtype=np.uint8)
-            do_task.write(do_write, auto_start=False)
+            tmp = np.asarray(ao_data, dtype=np.float64,order='C')
+            ao_data = np.ascontiguousarray(tmp.T.copy())
+ #           print(ao_data.shape, ao_data.flags)
+            ao_task.write(ao_data, auto_start=False)
+ #           do_write = np.ascontiguousarray(do_data, dtype=np.uint8)
+ #           do_task.write(do_write, auto_start=False)
 
-            do_task.start()
+ #           do_task.start()
             ao_task.start()
 
             print(f"[AO/DO] Running")
@@ -201,7 +204,7 @@ def galvo_and_triggers_thread(ao_data,do_data,stop_event,pattern_specs=specs_bid
                     time.sleep(0.1)
             finally:
                 ao_task.stop()
-                do_task.stop()
+ #               do_task.stop()
                 print("[AO/DO] Stopped.")
     finally:
         stop_outputs(AO_CHANNELS)
@@ -358,16 +361,16 @@ def run():
         args=(ao_data, do_data,stop_event, specs_bidirectional),
         daemon=True
     )
-    t_ai = threading.Thread(
-        target=detector_thread,
-        args=(scan_layout,stop_event,image_queue, specs_bidirectional),
-        daemon=True
-    )
+#    t_ai = threading.Thread(
+#        target=detector_thread,
+#        args=(scan_layout,stop_event,image_queue, specs_bidirectional),
+#        daemon=True
+#    )
 
 
     t_galvo.start()
     time.sleep(0.1)
-    t_ai.start()
+ #   t_ai.start()
 
     try:
         display_loop(stop_event,image_queue)
@@ -376,18 +379,17 @@ def run():
         stop_event.set()
     
     t_galvo.join()
-    t_ai.join()
+ #   t_ai.join()
     print("All threads stopped.")
 
 def test():
-    ao_data, do_data, pixel_gate, scan_layout = setup_and_check_pattern(specs_bidirectional)
+    ao_data, do_data, scan_layout = setup_and_check_pattern(specs_bidirectional)
     print("AO data shape:", ao_data.shape)
     print("DO data shape:", do_data.shape)
-    print("Pixel gate shape:", pixel_gate.shape)
     print("Scan layout:", scan_layout["line_samples"], "samples per line")
     print("Scan layout:", scan_layout["max_line_samples"], "max samples per line")
     print("Scan layout:", scan_layout["complete_line_samples"], "complete line samples (including flyback)")
 
 if __name__ == "__main__":
-    test()
-    #run()
+    #test()
+    run()
