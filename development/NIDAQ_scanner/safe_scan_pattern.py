@@ -1,6 +1,198 @@
 import numpy as np
 from typing import Tuple
 
+# add hard coded Galvo limits to prevent overdriving
+GALVO_V_MIN = -10.0
+GALVO_V_MAX = 10.0
+# galvo limits: specs for Thorlabs GVS002 galvo scanner sine wave with 250 Hz frequency at full (+/-10 V) amplitude
+# vmax=2 pi f A = 2 * pi * 250 Hz * 10 V = 15.707 V/ms
+# amax=(2 pi f)^2 A = (2 * pi * 250 Hz)^2 * 10 V = 24,674 V/ms²
+GALVO_MAX_DERIVATIVE_V_PER_S = 15707  # max allowed slew rate (V/s)
+GALVO_MAX_SECOND_DERIVATIVE_V_PER_S_SQUARED = 2.4674e7  # max allowed acceleration (V/s²) (10 V/ms²)
+GALVO_MAX_FREQUENCY_HZ = 250.0         # max allowed frequency (Hz)
+
+
+def stop_outputs(device_channels: str) -> None:
+    """Set outputs to zero (both channels) and clean up."""
+    try:
+        import nidaqmx
+        with nidaqmx.Task() as t:
+            t.ao_channels.add_ao_voltage_chan(device_channels, min_val=-10.0, max_val=10.0)
+            # many devices accept writing a single sample per channel to set output
+            t.write([0.0, 0.0], auto_start=True)
+    except Exception as exc:
+        print("Warning: could not explicitly write zeros to device:", exc)
+    print("Outputs set to 0 V (best-effort).")
+
+def periodic_gradient(x, dt):
+    return (np.roll(x, -1) - np.roll(x, 1)) / (2 * dt)
+
+def periodic_second_gradient(x, dt):
+    return (np.roll(x, -1) - 2*x + np.roll(x, 1)) / (dt**2)
+
+
+def compute_pattern_metrics(pattern: np.ndarray, rate: float):
+    """
+    Compute summary statistics for a two-channel pattern, treating the pattern
+    as periodic (wrap-around) for derivative and crossing calculations.
+
+    Frequency estimation:
+      - threshold = (min+max)/2
+      - find all sample indices where the signal crosses the threshold (either direction),
+        including a crossing between the last and first sample.
+      - median distance between consecutive crossings ~= half-period (samples)
+      - period_samples = median_diff * 2
+      - freq = rate / period_samples
+      - cap freq at frame_rate = rate / N_samples (pattern repetition rate)
+
+    Derivative:
+      - compute discrete differences including the wrap (last -> first),
+        then scale by sample rate to get V/s and take the max absolute value.
+    """
+
+    a = np.asarray(pattern, dtype=float)
+    if a.ndim != 2 or a.shape[1] != 2:
+        raise ValueError("pattern must be shape (N, 2)")
+
+    N = a.shape[0]
+    frame_rate = float(rate) / float(max(1, N))  # pattern repetition frequency (Hz)
+    res = {}
+
+    for idx, axis_name in enumerate(("X", "Y")):
+        axis = a[:, idx].ravel()
+        if axis.size == 0:
+            res[f"{axis_name}_min"] = 0.0
+            res[f"{axis_name}_max"] = 0.0
+            res[f"{axis_name}_peak_to_peak"] = 0.0
+            res[f"{axis_name}_frequency_hz"] = 0.0
+            res[f"{axis_name}_max_abs_derivative"] = 0.0
+            res[f"{axis_name}_max_abs_second_derivative"] = 0.0
+            continue
+
+        vmin = float(axis.min())
+        vmax = float(axis.max())
+        res[f"{axis_name}_min"] = vmin
+        res[f"{axis_name}_max"] = vmax
+        res[f"{axis_name}_peak_to_peak"] = float(vmax - vmin)
+
+        # Numerical derivative (V/s) including wrap-around (last -> first)
+        if axis.size >= 2:
+            # differences for samples 0..N-2
+            dv_linear = np.diff(axis)
+            # wrap difference between last and first
+            dv_wrap = axis[0] - axis[-1]
+            dv_all = np.concatenate((dv_linear, np.atleast_1d(dv_wrap)))
+            deriv = np.abs(dv_all) * float(rate)  # deltaV / deltaT where deltaT=1/rate
+            res[f"{axis_name}_max_abs_derivative"] = float(np.nanmax(deriv))
+        else:
+            res[f"{axis_name}_max_abs_derivative"] = 0.0
+        # Numerical second derivative (V/s²) including wrap-around
+        if axis.size >= 3:  
+            d2v_linear = np.diff(axis, n=2)
+            # wrap second differences
+            d2v_wrap_1 = axis[1] - 2 * axis[0] + axis[-1]
+            d2v_wrap_2 = axis[0] - 2 * axis[-1] + axis[-2]
+            d2v_all = np.concatenate((d2v_linear, np.atleast_1d(d2v_wrap_1), np.atleast_1d(d2v_wrap_2)))
+            second_deriv = np.abs(d2v_all) * (float(rate) ** 2)  # delta²V / deltaT² where deltaT=1/rate
+            res[f"{axis_name}_max_abs_second_derivative"] = float(np.nanmax(second_deriv))
+        else:
+            res[f"{axis_name}_max_abs_second_derivative"] = 0.0
+
+        # Frequency via threshold crossings (robust, circular)
+        if vmin == vmax or axis.size < 3:
+            res[f"{axis_name}_frequency_hz"] = 0.0
+        else:
+            thresh = 0.5 * (vmin + vmax)
+            s = axis - thresh
+
+            # robust sign array (treat zeros consistently)
+            sign = np.sign(s)
+            # treat zeros: replace 0 with previous non-zero sign to avoid spurious gaps
+            zero_idx = np.where(sign == 0)[0]
+            if zero_idx.size:
+                # fill zeros by propagating nearest non-zero neighbor (forward fill then backward)
+                sign_ffill = sign.copy()
+                for i in range(1, sign_ffill.size):
+                    if sign_ffill[i] == 0:
+                        sign_ffill[i] = sign_ffill[i - 1]
+                # backward pass for leading zeros
+                for i in range(sign_ffill.size - 2, -1, -1):
+                    if sign_ffill[i] == 0:
+                        sign_ffill[i] = sign_ffill[i + 1]
+                # if still zeros (all zeros), then no crossings
+                if np.all(sign_ffill == 0):
+                    res[f"{axis_name}_frequency_hz"] = 0.0
+                    continue
+                sign = sign_ffill
+
+            # detect indices where sign changes between consecutive samples, include wrap
+            # sign[i] != sign[(i+1)%N] -> crossing between i and i+1 (report i+1)
+            changes = np.nonzero(sign != np.roll(sign, -1))[0]
+            if changes.size == 0:
+                res[f"{axis_name}_frequency_hz"] = 0.0
+            else:
+                # crossing indices (report the index of the sample after the change)
+                crossings = (changes + 1) % N
+                crossings = np.unique(crossings)  # unique and sorted
+                if crossings.size < 2:
+                    res[f"{axis_name}_frequency_hz"] = 0.0
+                else:
+                    # compute circular diffs between consecutive crossings
+                    diffs = np.diff(crossings)
+                    # include wrap gap from last -> first
+                    wrap_gap = (crossings[0] + N) - crossings[-1]
+                    all_gaps = np.concatenate((diffs.astype(float), np.atleast_1d(float(wrap_gap))))
+                    # median gap in samples is median distance between consecutive crossings
+                    median_crossing_gap = float(np.median(all_gaps))
+                    if median_crossing_gap <= 0:
+                        res[f"{axis_name}_frequency_hz"] = 0.0
+                    else:
+                        # consecutive crossings are ~ half-period -> full period = median_crossing_gap * 2
+                        period_samples = median_crossing_gap * 2.0
+                        freq = float(rate) / float(period_samples)
+                        # cap to Nyquist (prevent unrealistic > Nyquist values)
+                        freq = min(freq, float(rate) / 2.0)
+                        res[f"{axis_name}_frequency_hz"] = float(freq)
+
+    return res
+
+
+def print_pattern_metrics(pattern: np.ndarray, rate: float):
+    m = compute_pattern_metrics(pattern, rate)
+    # pretty print
+    print("Pattern metrics:")
+    print(f"  X: min={m['X_min']:.4g}  max={m['X_max']:.4g}  p2p={m['X_peak_to_peak']:.4g}  "
+          f"freq={m['X_frequency_hz']:.3f} Hz  max|dV/dt|={m['X_max_abs_derivative']:.4g} V/s  max|d²V/dt²|={m['X_max_abs_second_derivative']:.4g} V/s²")
+    print(f"  Y: min={m['Y_min']:.4g}  max={m['Y_max']:.4g}  p2p={m['Y_peak_to_peak']:.4g}  "
+          f"freq={m['Y_frequency_hz']:.3f} Hz  max|dV/dt|={m['Y_max_abs_derivative']:.4g} V/s  max|d²V/dt²|={m['Y_max_abs_second_derivative']:.4g} V/s²")
+    print(f"time to complete pattern: {len(pattern)/rate:.3f} s")
+    return m
+
+def check_if_exceeds_limits(pattern: np.ndarray, rate: float) -> bool:
+    """Check whether the pattern exceeds galvo limits; return True if it does."""
+    m = compute_pattern_metrics(pattern, rate)
+    exceeds = False
+
+    for axis_name in ("X", "Y"):
+        vmin = m[f"{axis_name}_min"]
+        vmax = m[f"{axis_name}_max"]
+        max_deriv = m[f"{axis_name}_max_abs_derivative"]
+        freq = m[f"{axis_name}_frequency_hz"]
+
+        if vmin < GALVO_V_MIN or vmax > GALVO_V_MAX:
+            print(f"Error: {axis_name} channel exceeds voltage limits ({vmin:.2f} V .. {vmax:.2f} V).")
+            exceeds = True
+        if max_deriv > GALVO_MAX_DERIVATIVE_V_PER_S:
+            print(f"Error: {axis_name} channel exceeds max derivative limit ({max_deriv:.2f} V/s).")
+            exceeds = True
+        if freq > GALVO_MAX_FREQUENCY_HZ:
+            print(f"Error: {axis_name} channel exceeds max frequency limit ({freq:.2f} Hz).")
+            exceeds = True
+        if m[f"{axis_name}_max_abs_second_derivative"] > GALVO_MAX_SECOND_DERIVATIVE_V_PER_S_SQUARED:
+            print(f"Error: {axis_name} channel exceeds max second derivative limit ({m[f'{axis_name}_max_abs_second_derivative']:.2f} V/s²).")
+            exceeds = True  
+
+    return exceeds
 
 def quintic_hermite(t: np.ndarray, T: float, x0: float, x1: float, v0: float, v1: float) -> np.ndarray:
     """
@@ -60,7 +252,6 @@ def _safe_num_points(n: int) -> int:
 
 def safe_scan_pattern(
     fs: float = 100_000,
-    nx: int = 256,
     ny: int = 128,
     line_rate: float = 20.0,
     x_amp: float = 2.0,
@@ -118,6 +309,15 @@ def safe_scan_pattern(
     # Y positions for each line (equally spaced)
     y_vals = np.linspace(-y_amp, y_amp, ny)
 
+    # This ensures that the trigger pulses at the start of each line and frame are 
+    # included in the pattern, even if the flyback time is very short. 
+    # The line trigger will be high for the first few samples of the active segment, 
+    # and the frame trigger will be high for the first few samples of the first line.
+    # If hardware allows very short pulses, set LINE_PULSE_SAMPLES and FRAME_PULSE_SAMPLES to 1 for minimal trigger duration.
+    LINE_PULSE_SAMPLES  = max(1, int(0.00005 * fs))   # 50 µs
+    FRAME_PULSE_SAMPLES = max(1, int(0.0001  * fs))   # 100 µs
+
+
     x_segments = []
     y_segments = []
     pixel_segments = []
@@ -145,9 +345,9 @@ def safe_scan_pattern(
         frame_act = np.zeros(n_act, dtype=np.uint8)
 
         # Line trigger at first active pixel
-        line_act[0] = 1
+        line_act[:LINE_PULSE_SAMPLES] = 1
         if i == 0:
-            frame_act[0] = 1
+            frame_act[:FRAME_PULSE_SAMPLES] = 1
 
 
         # Flyback segment: smooth transition to next X start and next Y

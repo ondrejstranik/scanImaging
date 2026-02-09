@@ -19,13 +19,8 @@ Notes:
 from __future__ import annotations
 import time
 import numpy as np
-from safe_scan_pattern import safe_scan_pattern
+from safe_scan_pattern import safe_scan_pattern, stop_outputs, periodic_gradient, periodic_second_gradient, check_if_exceeds_limits, print_pattern_metrics
 
-def periodic_gradient(x, dt):
-    return (np.roll(x, -1) - np.roll(x, 1)) / (2 * dt)
-
-def periodic_second_gradient(x, dt):
-    return (np.roll(x, -1) - 2*x + np.roll(x, 1)) / (dt**2)
 
 
 # User parameters (tweak to your hardware / needs)
@@ -62,7 +57,6 @@ def generate_safe_raster_pattern(
 ) -> np.ndarray:    
     t,x,y, pixel_gate, line_trig, frame_trig = safe_scan_pattern(
         fs=int(rate),
-        nx=pixels_x,
         ny=pixels_y,
         line_rate=line_rate,
         x_amp=fov_voltage / 2,
@@ -144,17 +138,7 @@ def make_raster_sine(samples_per_line: int = 512, lines_per_frame: int = 128,
     return np.column_stack((np.array(x), np.array(y)))
 
 
-def stop_outputs(device_channels: str = AO_CHANNELS) -> None:
-    """Set outputs to zero (both channels) and clean up."""
-    try:
-        import nidaqmx
-        with nidaqmx.Task() as t:
-            t.ao_channels.add_ao_voltage_chan(device_channels, min_val=-10.0, max_val=10.0)
-            # many devices accept writing a single sample per channel to set output
-            t.write([0.0, 0.0], auto_start=True)
-    except Exception as exc:
-        print("Warning: could not explicitly write zeros to device:", exc)
-    print("Outputs set to 0 V (best-effort).")
+
 
 
 def run_pattern(pattern: np.ndarray, rate: int = RATE, device_channels: str = AO_CHANNELS) -> None:
@@ -292,169 +276,7 @@ def plot_pattern_xy(pattern: np.ndarray,rate: float):
     plt.tight_layout()
     plt.show()
 
-def compute_pattern_metrics(pattern: np.ndarray, rate: float):
-    """
-    Compute summary statistics for a two-channel pattern, treating the pattern
-    as periodic (wrap-around) for derivative and crossing calculations.
 
-    Frequency estimation:
-      - threshold = (min+max)/2
-      - find all sample indices where the signal crosses the threshold (either direction),
-        including a crossing between the last and first sample.
-      - median distance between consecutive crossings ~= half-period (samples)
-      - period_samples = median_diff * 2
-      - freq = rate / period_samples
-      - cap freq at frame_rate = rate / N_samples (pattern repetition rate)
-
-    Derivative:
-      - compute discrete differences including the wrap (last -> first),
-        then scale by sample rate to get V/s and take the max absolute value.
-    """
-    import numpy as _np
-
-    a = _np.asarray(pattern, dtype=float)
-    if a.ndim != 2 or a.shape[1] != 2:
-        raise ValueError("pattern must be shape (N, 2)")
-
-    N = a.shape[0]
-    frame_rate = float(rate) / float(max(1, N))  # pattern repetition frequency (Hz)
-    res = {}
-
-    for idx, axis_name in enumerate(("X", "Y")):
-        axis = a[:, idx].ravel()
-        if axis.size == 0:
-            res[f"{axis_name}_min"] = 0.0
-            res[f"{axis_name}_max"] = 0.0
-            res[f"{axis_name}_peak_to_peak"] = 0.0
-            res[f"{axis_name}_frequency_hz"] = 0.0
-            res[f"{axis_name}_max_abs_derivative"] = 0.0
-            res[f"{axis_name}_max_abs_second_derivative"] = 0.0
-            continue
-
-        vmin = float(axis.min())
-        vmax = float(axis.max())
-        res[f"{axis_name}_min"] = vmin
-        res[f"{axis_name}_max"] = vmax
-        res[f"{axis_name}_peak_to_peak"] = float(vmax - vmin)
-
-        # Numerical derivative (V/s) including wrap-around (last -> first)
-        if axis.size >= 2:
-            # differences for samples 0..N-2
-            dv_linear = _np.diff(axis)
-            # wrap difference between last and first
-            dv_wrap = axis[0] - axis[-1]
-            dv_all = _np.concatenate((dv_linear, _np.atleast_1d(dv_wrap)))
-            deriv = _np.abs(dv_all) * float(rate)  # deltaV / deltaT where deltaT=1/rate
-            res[f"{axis_name}_max_abs_derivative"] = float(_np.nanmax(deriv))
-        else:
-            res[f"{axis_name}_max_abs_derivative"] = 0.0
-        # Numerical second derivative (V/s²) including wrap-around
-        if axis.size >= 3:  
-            d2v_linear = _np.diff(axis, n=2)
-            # wrap second differences
-            d2v_wrap_1 = axis[1] - 2 * axis[0] + axis[-1]
-            d2v_wrap_2 = axis[0] - 2 * axis[-1] + axis[-2]
-            d2v_all = _np.concatenate((d2v_linear, _np.atleast_1d(d2v_wrap_1), _np.atleast_1d(d2v_wrap_2)))
-            second_deriv = _np.abs(d2v_all) * (float(rate) ** 2)  # delta²V / deltaT² where deltaT=1/rate
-            res[f"{axis_name}_max_abs_second_derivative"] = float(_np.nanmax(second_deriv))
-        else:
-            res[f"{axis_name}_max_abs_second_derivative"] = 0.0
-
-        # Frequency via threshold crossings (robust, circular)
-        if vmin == vmax or axis.size < 3:
-            res[f"{axis_name}_frequency_hz"] = 0.0
-        else:
-            thresh = 0.5 * (vmin + vmax)
-            s = axis - thresh
-
-            # robust sign array (treat zeros consistently)
-            sign = _np.sign(s)
-            # treat zeros: replace 0 with previous non-zero sign to avoid spurious gaps
-            zero_idx = _np.where(sign == 0)[0]
-            if zero_idx.size:
-                # fill zeros by propagating nearest non-zero neighbor (forward fill then backward)
-                sign_ffill = sign.copy()
-                for i in range(1, sign_ffill.size):
-                    if sign_ffill[i] == 0:
-                        sign_ffill[i] = sign_ffill[i - 1]
-                # backward pass for leading zeros
-                for i in range(sign_ffill.size - 2, -1, -1):
-                    if sign_ffill[i] == 0:
-                        sign_ffill[i] = sign_ffill[i + 1]
-                # if still zeros (all zeros), then no crossings
-                if _np.all(sign_ffill == 0):
-                    res[f"{axis_name}_frequency_hz"] = 0.0
-                    continue
-                sign = sign_ffill
-
-            # detect indices where sign changes between consecutive samples, include wrap
-            # sign[i] != sign[(i+1)%N] -> crossing between i and i+1 (report i+1)
-            changes = _np.nonzero(sign != _np.roll(sign, -1))[0]
-            if changes.size == 0:
-                res[f"{axis_name}_frequency_hz"] = 0.0
-            else:
-                # crossing indices (report the index of the sample after the change)
-                crossings = (changes + 1) % N
-                crossings = _np.unique(crossings)  # unique and sorted
-                if crossings.size < 2:
-                    res[f"{axis_name}_frequency_hz"] = 0.0
-                else:
-                    # compute circular diffs between consecutive crossings
-                    diffs = _np.diff(crossings)
-                    # include wrap gap from last -> first
-                    wrap_gap = (crossings[0] + N) - crossings[-1]
-                    all_gaps = _np.concatenate((diffs.astype(float), _np.atleast_1d(float(wrap_gap))))
-                    # median gap in samples is median distance between consecutive crossings
-                    median_crossing_gap = float(_np.median(all_gaps))
-                    if median_crossing_gap <= 0:
-                        res[f"{axis_name}_frequency_hz"] = 0.0
-                    else:
-                        # consecutive crossings are ~ half-period -> full period = median_crossing_gap * 2
-                        period_samples = median_crossing_gap * 2.0
-                        freq = float(rate) / float(period_samples)
-                        # cap to Nyquist (prevent unrealistic > Nyquist values)
-                        freq = min(freq, float(rate) / 2.0)
-                        res[f"{axis_name}_frequency_hz"] = float(freq)
-
-    return res
-
-
-def print_pattern_metrics(pattern: np.ndarray, rate: float):
-    m = compute_pattern_metrics(pattern, rate)
-    # pretty print
-    print("Pattern metrics:")
-    print(f"  X: min={m['X_min']:.4g}  max={m['X_max']:.4g}  p2p={m['X_peak_to_peak']:.4g}  "
-          f"freq={m['X_frequency_hz']:.3f} Hz  max|dV/dt|={m['X_max_abs_derivative']:.4g} V/s  max|d²V/dt²|={m['X_max_abs_second_derivative']:.4g} V/s²")
-    print(f"  Y: min={m['Y_min']:.4g}  max={m['Y_max']:.4g}  p2p={m['Y_peak_to_peak']:.4g}  "
-          f"freq={m['Y_frequency_hz']:.3f} Hz  max|dV/dt|={m['Y_max_abs_derivative']:.4g} V/s  max|d²V/dt²|={m['Y_max_abs_second_derivative']:.4g} V/s²")
-    print(f"time to complete pattern: {len(pattern)/rate:.3f} s")
-    return m
-
-def check_if_exceeds_limits(pattern: np.ndarray, rate: float) -> bool:
-    """Check whether the pattern exceeds galvo limits; return True if it does."""
-    m = compute_pattern_metrics(pattern, rate)
-    exceeds = False
-
-    for axis_name in ("X", "Y"):
-        vmin = m[f"{axis_name}_min"]
-        vmax = m[f"{axis_name}_max"]
-        max_deriv = m[f"{axis_name}_max_abs_derivative"]
-        freq = m[f"{axis_name}_frequency_hz"]
-
-        if vmin < GALVO_V_MIN or vmax > GALVO_V_MAX:
-            print(f"Error: {axis_name} channel exceeds voltage limits ({vmin:.2f} V .. {vmax:.2f} V).")
-            exceeds = True
-        if max_deriv > GALVO_MAX_DERIVATIVE_V_PER_S:
-            print(f"Error: {axis_name} channel exceeds max derivative limit ({max_deriv:.2f} V/s).")
-            exceeds = True
-        if freq > GALVO_MAX_FREQUENCY_HZ:
-            print(f"Error: {axis_name} channel exceeds max frequency limit ({freq:.2f} Hz).")
-            exceeds = True
-        if m[f"{axis_name}_max_abs_second_derivative"] > GALVO_MAX_SECOND_DERIVATIVE_V_PER_S_SQUARED:
-            print(f"Error: {axis_name} channel exceeds max second derivative limit ({m[f'{axis_name}_max_abs_second_derivative']:.2f} V/s²).")
-            exceeds = True  
-
-    return exceeds
 
 def main():
     # check dependencies but don't hard-fail: plotting should work without DAQ
