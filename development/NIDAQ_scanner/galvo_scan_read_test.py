@@ -6,7 +6,7 @@ import time
 import threading
 import queue
 import numpy as np
-
+from collections import deque
 from safe_scan_pattern import print_pattern_metrics, safe_scan_pattern, stop_outputs,check_if_exceeds_limits
 
 # ----------------------------
@@ -33,6 +33,144 @@ TRIGGER_START=f"/{DEV}/ao/StartTrigger"
 TRIGGER_LINES=f"{DEV}/port0/line0:2"  # DO lines for line/frame/dwell triggers
 TRIGGER_PORT=f"{DEV}/port0"              # port for DO triggers
 SLEEP_POLL = 0.05              # poll interval while waiting for key press
+
+
+class GalvoAoWrapper:
+    def __init__(self, task,channel):
+        self.task = task
+        self.data=None
+        self.channel=channel
+
+    def write(self, ao_data):
+        tmp = np.asarray(ao_data, dtype=np.float64,order='C')
+        self.data = np.ascontiguousarray(tmp.T.copy())
+        self.task.write(self.data, auto_start=False)
+
+    def start(self):
+        self.task.start()
+
+    def stop(self):
+        self.task.stop()
+        self.task.close()
+        if self.channel is not None:
+            stop_outputs(self.channel)
+
+class AiWrapper:
+    def __init__(self, task):
+        self.task = task
+
+    def start(self):
+        self.task.start()
+
+    def read(self, n,timeout):
+        return self.task.read(number_of_samples_per_channel=n, timeout=timeout)
+
+    def stop(self):
+        self.task.stop()
+        self.task.close()
+
+class DoWrapper:
+    def __init__(self, task):
+        self.task = task
+        self.data=None
+
+    def write_from_gates(self,pixel_gate,line_trig,frame_trig):
+        do_data = (
+        (pixel_gate << 0) |
+        (line_trig   << 1) |
+        (frame_trig  << 2)
+        ).astype(np.uint8)
+        self.write(do_data)
+
+    def write(self, do_data):
+        self.data = do_data.copy()
+        self.task.write(self.data, auto_start=False)
+
+    def start(self):
+        self.task.start()
+
+    def stop(self):
+        self.task.stop()
+        self.task.close()
+
+
+
+# Important Note: the ai and do tasks need to be armed (started) before the ao task. Otherwise the tasks get out of sync.
+# The AO task defines the sample clock and therefore it has to be generated first, but started last.
+# Only if the AO task start the sample clock, the other tasks will start.
+class NIDaqTaskFactory:
+    def __init__(self, device="Dev1"):
+        import nidaqmx
+        self.nidaqmx = nidaqmx
+        self.device = device
+        self._sample_clock = None
+        self._ao_task = None
+        self.device_voltage_range=10.0 # ± voltage range visible in UI (not enforced by device)
+        self.device_max_sample_rate=250000 
+        self.device_sample_rate=200000 
+        self.ao_channels="ao0:1"
+        self.do_port="port0/line0:2"
+        self.ai_channel="ai0"
+
+    def set_rate(self,rate):
+        if rate>self.device_max_sample_rate:
+            raise RuntimeError("To large input for smaple rate on this device!")
+        self.device_sample_rate=rate
+
+    def create_ao_wrapper(self, samps_per_chan):
+        # samps_per_chan=total_samples=ao_data.shape[0]
+        from nidaqmx.constants import AcquisitionType,RegenerationMode
+        ao_channels=f"{self.device}/{self.ao_channels}"
+        ao_task = self.nidaqmx.Task()
+        ao_task.ao_channels.add_ao_voltage_chan(ao_channels, min_val=-self.device_voltage_range, max_val=self.device_voltage_range)
+        ao_task.timing.cfg_samp_clk_timing(self.device_sample_rate, 
+                sample_mode=AcquisitionType.CONTINUOUS, 
+                samps_per_chan=samps_per_chan)
+        try:
+            ao_task.out_stream.regen_mode = RegenerationMode.ALLOW_REGENERATION
+        except Exception:
+            pass
+
+        # sample clock is needed for later reference.
+        self._sample_clock = ao_task.timing.samp_clk_term
+        self._ao_task = ao_task
+
+        return GalvoAoWrapper(ao_task,ao_channels)
+
+    def create_do_wrapper(self, samps_per_chan):
+        if self._sample_clock is None:
+            raise RuntimeError("AO must be created first")
+        from nidaqmx.constants import AcquisitionType,Edge,LineGrouping
+        do_task = self.nidaqmx.Task()
+        do_task.do_channels.add_do_chan(
+            f"{self.device}/{self.do_port}",
+            line_grouping=LineGrouping.CHAN_FOR_ALL_LINES
+            )
+        do_task.timing.cfg_samp_clk_timing(
+                rate=self.device_sample_rate,
+                source=self._sample_clock,
+                sample_mode=AcquisitionType.CONTINUOUS,
+                samps_per_chan=samps_per_chan
+            )
+        return DoWrapper(do_task)
+
+    def create_ai_wrapper(self, ai_vmin,ai_vmax,samps_per_chan):
+        # samps_per_chan=2*scan_layout["max_line_read_samples"]
+        if self._sample_clock is None:
+            raise RuntimeError("AO must be created first")
+        from nidaqmx.constants import AcquisitionType,Edge
+        ai_task = self.nidaqmx.Task()
+        ai_task.ai_channels.add_ai_voltage_chan(f"{self.device}/{self.ai_channel}", min_val=ai_vmin, max_val=ai_vmax)
+        ai_task.timing.cfg_samp_clk_timing(
+            rate=self.device_sample_rate,
+            source=self._sample_clock,
+            sample_mode=AcquisitionType.CONTINUOUS,
+            samps_per_chan=samps_per_chan
+        )
+        return AiWrapper(ai_task)
+
+
+
 
 
 specs_unidirectional={"rate":RATE,
@@ -135,180 +273,70 @@ def setup_and_check_pattern(pattern_specs=specs_bidirectional):
     return ao_data, do_data, scan_layout
 
 
-class NiDaqAOHandler:
-    def __init__(self):
-        self.aochannels=AO_CHANNELS
-        self.aichannels=ai_channel
-        self.min_voltage=-10.0
-        self.max_voltage=10.0
-        self.total_samples=0
-        self.ao_task=None
-        self.do_task=None
-    
-    def start(self,ao_data,do_data):
-        pass
-
-    def stop(self):
-        pass
-
 
 # ----------------------------
 # Threads
 # ----------------------------
-def galvo_and_triggers_thread(ao_data,do_data,stop_event,pattern_specs=specs_bidirectional):
-    rate=int(pattern_specs["rate"])
-    total_samples = ao_data.shape[0]
-    import nidaqmx
-    from nidaqmx.constants import AcquisitionType, LineGrouping, Edge, RegenerationMode
-    try:
-        with nidaqmx.Task() as ao_task, nidaqmx.Task() as do_task:
-            # AO: two channels for X+ and Y+
-            ao_task.ao_channels.add_ao_voltage_chan(AO_CHANNELS, min_val=-10.0, max_val=10.0)
-            ao_task.timing.cfg_samp_clk_timing(rate, 
-                sample_mode=AcquisitionType.CONTINUOUS, 
-                samps_per_chan=total_samples)
-            try:
-                ao_task.out_stream.regen_mode = RegenerationMode.ALLOW_REGENERATION
-            except Exception:
-                pass
+def consume_from_fifo(fifo,n):
+    while len(fifo) < n:
+        time.sleep(0.0005)  # yield
+    out = [fifo.popleft() for _ in range(n)]
+    return np.asarray(out, dtype=np.float32)
 
-            # DO: three trigger lines, clocked by AO sample clock
-            do_task.do_channels.add_do_chan(
-            TRIGGER_PORT,
-            line_grouping=LineGrouping.CHAN_FOR_ALL_LINES
-            )
-
-#            do_task.do_channels.add_do_chan(TRIGGER_LINES, line_grouping=LineGrouping.CHAN_PER_LINE)
-#            do_task.timing.cfg_samp_clk_timing(
-#                rate=rate,
-#                source=SAMPLE_CLOCK,
-#                sample_mode=AcquisitionType.CONTINUOUS,
-#                samps_per_chan=do_data.shape[0]
-#            )
-            do_task.triggers.start_trigger.cfg_dig_edge_start_trig(
-                trigger_source=TRIGGER_START, trigger_edge=Edge.RISING
-            )
-            tmp = np.asarray(ao_data, dtype=np.float64,order='C')
-            ao_data = np.ascontiguousarray(tmp.T.copy())
- #           print(ao_data.shape, ao_data.flags)
-            ao_task.write(ao_data, auto_start=False)
- #           do_write = np.ascontiguousarray(do_data, dtype=np.uint8)
- #           do_task.write(do_write, auto_start=False)
-
- #           do_task.start()
-            ao_task.start()
-
-            print(f"[AO/DO] Running")
-            try:
-                while not stop_event.is_set():
-                    time.sleep(0.1)
-            finally:
-                ao_task.stop()
- #               do_task.stop()
-                print("[AO/DO] Stopped.")
-    finally:
-        stop_outputs(AO_CHANNELS)
-
-def detector_thread(scan_layout,stop_event,image_queue, pattern_specs=specs_bidirectional):
+# Do not call ai_task.start() since thread handling is non-deterministic.
+def detector_thread(ai_task,scan_layout,stop_event,image_queue, pattern_specs=specs_bidirectional):
     nx=pattern_specs["pixels_x"]
     ny=pattern_specs["pixels_y"]
     bidirectional=pattern_specs["bidirectional"]
     max_line_samples=scan_layout["max_line_samples"]
-    rate=pattern_specs["rate"]    
-    import nidaqmx
-    from nidaqmx.constants import AcquisitionType, Edge
-    with nidaqmx.Task() as ai_task:
-        ai_task.ai_channels.add_ai_voltage_chan(ai_channel, min_val=ai_vmin, max_val=ai_vmax)
-        ai_task.timing.cfg_samp_clk_timing(
-            rate=rate,
-            source=SAMPLE_CLOCK,
-            sample_mode=AcquisitionType.CONTINUOUS,
-            samps_per_chan=2*scan_layout["max_line_read_samples"]
-        )
-        ai_task.triggers.start_trigger.cfg_dig_edge_start_trig(
-            trigger_source=TRIGGER_START, trigger_edge=Edge.RISING
-        )
-
-        ai_task.start()
-        print("[AI] Acquisition started.")
-        line_idx = 0
-        frame = np.zeros((ny, nx), dtype=np.float32)
-        blocking=max_line_samples//nx #samples per pixel, rounded down. 
-        if blocking <= 0:
-            raise RuntimeError("Invalid blocking factor: increase sampling rate or reduce pixels_x.")
-        if max_line_samples % nx != 0:
-            print("Warning: pixel binning truncates samples")
-        try:
-            while not stop_event.is_set():
-                samples_per_read = scan_layout["complete_line_samples"][line_idx]
-                line_samples=scan_layout["line_samples"][line_idx]
-                data = ai_task.read(number_of_samples_per_channel=samples_per_read, timeout=5.0)
-                if samples_per_read<line_samples:
-                    raise RuntimeError(f"Read slice out of range: {samples_per_read} vs {line_samples}")
-                data = np.asarray(data, dtype=np.float32)
-                line=data[:line_samples]
-                if len(line) < max_line_samples:
-                    padded = np.full(max_line_samples, 0, dtype=np.float32)
-                    padded[:len(line)] = line
-                    line = padded
-                line = np.nanmean(
-                    line[:nx * blocking].reshape(nx, blocking),
-                    axis=1
-                )
-                if bidirectional and (line_idx % 2 == 1):
-                    line = line[::-1]
-                frame[line_idx,:] = line
-                line_idx += 1
-                if line_idx >= ny:
-                    try:
-                        if image_queue.full():
-                            image_queue.get_nowait()
-                        image_queue.put_nowait(frame.copy())
-                    except queue.Full:
-                        pass
-                    line_idx = 0
-        finally:
-            ai_task.stop()
-            print("[AI] Acquisition stopped.")
-
-def display_thread(stop_event,image_queue,pattern_specs=specs_bidirectional):
-    import matplotlib.pyplot as plt
-    nx=pattern_specs["pixels_x"]
-    ny=pattern_specs["pixels_y"]
-    plt.ion()
-    fig, ax = plt.subplots()
-    img = ax.imshow(
-        np.zeros((ny, nx)),
-        cmap="gray",
-        vmin=0,
-        vmax=ai_vmax,
-        origin="upper",
-        aspect="auto"
-    )
-    plt.title("Live Confocal Image")
-    plt.colorbar(img, ax=ax)
-
-    frames = 0
-    t0 = time.time()
-
+    line_idx = 0
+    frame = np.zeros((ny, nx), dtype=np.float32)
+    blocking=max_line_samples//nx #samples per pixel, rounded down. 
+    if blocking <= 0:
+        raise RuntimeError("Invalid blocking factor: increase sampling rate or reduce pixels_x.")
+    if max_line_samples % nx != 0:
+        print("Warning: pixel binning truncates samples")
+    # add a software fifo
+    fifo=deque()
+    READ_CHUNK=4096
+    MAX_FIFO=10*READ_CHUNK
     while not stop_event.is_set():
-        try:
-            frame = image_queue.get(timeout=0.2)
-        except queue.Empty:
-            continue
+        samples_per_read = scan_layout["complete_line_samples"][line_idx]
+        line_samples=scan_layout["line_samples"][line_idx]
+        fifo.extend(ai_task.read(number_of_samples_per_channel=READ_CHUNK, timeout=5.0))
+        data = consume_from_fifo(fifo,samples_per_read)
+        if samples_per_read<line_samples:
+            raise RuntimeError(f"Read slice out of range: {samples_per_read} vs {line_samples}")
+        if blocking * nx > line_samples:
+            raise RuntimeError("Blocking exceeds available samples")
+        data = np.asarray(data, dtype=np.float32)
+        line=data[:line_samples]
+        if len(line) < max_line_samples:
+            padded = np.full(max_line_samples, np.nan, dtype=np.float32)
+            padded[:len(line)] = line
+            line = padded
+        line = np.nanmean(
+            line[:nx * blocking].reshape(nx, blocking),
+            axis=1
+        )
+        if bidirectional and (line_idx % 2 == 1):
+            line = line[::-1]
+        frame[line_idx,:] = line
+        line_idx += 1
+        if line_idx >= ny:
+            try:
+                if image_queue.full():
+                    image_queue.get_nowait()
+                image_queue.put_nowait(frame.copy())
+            except queue.Full:
+                pass
+            line_idx = 0
+        if len(fifo)>MAX_FIFO:
+             print("[WARN] FIFO overflow, dropping samples")
+             while len(fifo) > MAX_FIFO // 2:
+                fifo.popleft()
+    print("[AI] Detector thread exiting")
 
-        img.set_data(frame)
-        img.set_clim(frame.min(), frame.max())
-        fig.canvas.draw_idle()
-        fig.canvas.flush_events()
-
-        frames += 1
-        if time.time() - t0 >= 1.0:
-            print(f"[Display] FPS ~ {frames}")
-            frames = 0
-            t0 = time.time()
-
-    plt.close(fig)
 
 def display_loop(stop_event,image_queue,pattern_specs=specs_bidirectional):
     import matplotlib.pyplot as plt
@@ -353,34 +381,42 @@ def display_loop(stop_event,image_queue,pattern_specs=specs_bidirectional):
 # Main
 # ----------------------------
 def run():
+    ai_vmin, ai_vmax = 0.0, 13.0  # DET36A/M output range into high-Z
     ao_data, do_data, scan_layout = setup_and_check_pattern(specs_bidirectional)
+    rate=int(specs_bidirectional["rate"])
+    total_scan_samples = ao_data.shape[0]
+    if total_scan_samples!= do_data.shape[0]:
+        raise RuntimeError("No match of scan and trigger samples!")
+    # make the reading channel larger than needed for safety
+    samps_per_read_chan=2*scan_layout["max_line_read_samples"]
     stop_event = threading.Event()
     image_queue = queue.Queue(maxsize=3)
-    t_galvo = threading.Thread(
-        target=galvo_and_triggers_thread,
-        args=(ao_data, do_data,stop_event, specs_bidirectional),
+    tasksfactory=NIDaqTaskFactory()
+    tasksfactory.set_rate(rate)
+    ao_task=tasksfactory.create_ao_wrapper(total_scan_samples)
+    do_task=tasksfactory.create_do_wrapper(total_scan_samples)
+    ai_task=tasksfactory.create_ai_wrapper(ai_vmin,ai_vmax,samps_per_read_chan)
+    t_ai = threading.Thread(
+        target=detector_thread,
+        args=(ai_task,scan_layout,stop_event,image_queue, specs_bidirectional),
         daemon=True
     )
-#    t_ai = threading.Thread(
-#        target=detector_thread,
-#        args=(scan_layout,stop_event,image_queue, specs_bidirectional),
-#        daemon=True
-#    )
-
-
-    t_galvo.start()
-    time.sleep(0.1)
- #   t_ai.start()
-
     try:
+        # arm the tasks:
+        ai_task.start()
+        do_task.start()
+        time.sleep(0.1)
+        t_ai.start()
+        # This has to be last since it starts the sample clock and hence also the other tasks.
+        ao_task.start()
         display_loop(stop_event,image_queue)
-
-    except KeyboardInterrupt:
+    finally:
         stop_event.set()
-    
-    t_galvo.join()
- #   t_ai.join()
-    print("All threads stopped.")
+        t_ai.join()
+        ai_task.stop()
+        do_task.stop()
+        ao_task.stop()
+        print("All threads stopped.")
 
 def test():
     ao_data, do_data, scan_layout = setup_and_check_pattern(specs_bidirectional)
