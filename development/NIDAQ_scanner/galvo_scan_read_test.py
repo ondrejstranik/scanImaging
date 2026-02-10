@@ -12,27 +12,27 @@ from safe_scan_pattern import print_pattern_metrics, safe_scan_pattern, stop_out
 # ----------------------------
 # Device and scan parameters
 # ----------------------------
-DEV = "Dev1"
+#DEV = "Dev1"
 
 # Detector input (Thorlabs DET36A/M)
-ai_channel = f"{DEV}/ai0"
-ai_vmin, ai_vmax = 0.0, 13.0  # DET36A/M output range into high-Z
+#ai_channel = f"{DEV}/ai0"
+#ai_vmin, ai_vmax = 0.0, 13.0  # DET36A/M output range into high-Z
 
 # Threading
 
 
 
-V_RANGE = 5.0                  # ± voltage range visible in UI (not enforced by device)
+#V_RANGE = 5.0                  # ± voltage range visible in UI (not enforced by device)
 # rate limit of DAQ AI/AO: 250 kS/s.
-RATE = 200000                    # samples per second for AO streaming
+#RATE = 200000                    # samples per second for AO streaming
 #RATE = 100000  # Sample rate in Hz (100 kHz typical for galvo microscopy)
-POINTS = 500                   # default points per pattern (per loop)
-AO_CHANNELS = f"{DEV}/ao0:1"     # channel string (two channels expected)
-SAMPLE_CLOCK=f"{DEV}/ao/SampleClock"
-TRIGGER_START=f"/{DEV}/ao/StartTrigger"
-TRIGGER_LINES=f"{DEV}/port0/line0:2"  # DO lines for line/frame/dwell triggers
-TRIGGER_PORT=f"{DEV}/port0"              # port for DO triggers
-SLEEP_POLL = 0.05              # poll interval while waiting for key press
+#POINTS = 500                   # default points per pattern (per loop)
+#AO_CHANNELS = f"{DEV}/ao0:1"     # channel string (two channels expected)
+#SAMPLE_CLOCK=f"{DEV}/ao/SampleClock"
+#TRIGGER_START=f"/{DEV}/ao/StartTrigger"
+#TRIGGER_LINES=f"{DEV}/port0/line0:2"  # DO lines for line/frame/dwell triggers
+#TRIGGER_PORT=f"{DEV}/port0"              # port for DO triggers
+#SLEEP_POLL = 0.05              # poll interval while waiting for key press
 
 
 class GalvoAoWrapper:
@@ -58,6 +58,9 @@ class GalvoAoWrapper:
 class AiWrapper:
     def __init__(self, task):
         self.task = task
+    # needed to mock scan
+    def initialize(self,scan_layout):
+        pass
 
     def start(self):
         self.task.start()
@@ -170,10 +173,146 @@ class NIDaqTaskFactory:
         return AiWrapper(ai_task)
 
 
+class FakeGalvoAoWrapper:
+    def __init__(self):
+        self.task = None
+        self.data=None
+        self.channel=None
+        self.ao_data=None
+
+    def write(self, ao_data):
+        self.ao_data=ao_data
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
+
+
+class FakeAiWrapper:
+    def __init__(self):
+        self.line_length=10000
+        self.bidirectional=True
+        self.line_flyback=10
+        self.frame_flyback=500
+        self.nLines=512
+
+    def initialize(self,scan_layout):
+        self.line_length=scan_layout["line_samples"][0]
+        self.bidirectional=True
+        self.line_flyback=scan_layout["complete_line_samples"][0]-scan_layout["line_samples"][0]
+        self.complete_line_size=scan_layout["complete_line_samples"][0]
+        if self.line_flyback<0:
+            self.line_flyback=0
+        self.frame_flyback=scan_layout["complete_line_samples"][-1]-scan_layout["line_samples"][-1]-self.line_flyback
+        if self.frame_flyback<0:
+            self.frame_flyback=0
+        self.nLines=len(scan_layout["line_samples"])
+        self.sample_size=scan_layout["pattern_size"]
+        self.rate=scan_layout["rate"]
+        self._set_image()
+
+    def _set_image(self):
+        from PIL import Image
+        p = "/home/georg/0_work/projects_IPHT/adaptive_optics_psf_analysis/ondra_example/scanImaging/scanImaging/instrument/virtual/images/tstimage.png"
+        img = Image.open(p).convert("L")
+        img = img.resize((int(self.line_length), int(self.nLines)), resample=Image.BILINEAR)
+        arr = np.asarray(img, dtype=np.float32)
+        if arr.max() != 0:
+            arr /= arr.max()
+#        arr*=0.0
+#        arr[:,len(arr)//2-10:len(arr)//2+10]=1.0
+        self.image=arr
+        if self.bidirectional:
+            for n in range(arr.shape[0]):
+                if n%2==1:
+                    arr[n,:]=arr[n,::-1]
+        arr=np.pad(arr,((0,0),(0,self.line_flyback)),mode='constant')
+        print(arr.shape)
+        if arr.shape[1]!=self.complete_line_size:
+            raise RuntimeError(f"Wrong line size {arr.shape[1]}!={self.complete_line_size}")
+        self.frame_image=arr
+        self.framedata=np.concatenate((arr.flatten(),np.zeros(self.frame_flyback)))
+        if len(self.framedata)!=self.sample_size:
+            raise RuntimeError(f"Not matching fake sample size {len(self.framedata)}!={self.sample_size}")
+        self.framedataindex=0
 
 
 
-specs_unidirectional={"rate":RATE,
+    def start(self):
+        pass
+
+    def read(self, n,timeout):
+        nn=len(self.framedata)
+        enddata=(self.framedataindex+n)
+        if enddata>nn:
+            enddata=enddata%nn
+            outdata=np.concatenate((self.framedata[self.framedataindex:nn],self.framedata[0:enddata]))
+        else:
+            outdata=self.framedata[self.framedataindex:enddata]
+        self.framedataindex=enddata
+        time.sleep(n/self.rate)
+        return outdata
+
+    def stop(self):
+        pass
+
+class FakeDoWrapper:
+    def __init__(self):
+        self.task = None
+        self.data=None
+
+    def write_from_gates(self,pixel_gate,line_trig,frame_trig):
+        pass
+
+    def write(self, do_data):
+        pass
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
+
+
+
+# Important Note: the ai and do tasks need to be armed (started) before the ao task. Otherwise the tasks get out of sync.
+# The AO task defines the sample clock and therefore it has to be generated first, but started last.
+# Only if the AO task start the sample clock, the other tasks will start.
+class FakeNIDaqTaskFactory:
+    def __init__(self, device="Dev1"):
+        self.nidaqmx = None
+        self.device = device
+        self._sample_clock = None
+        self._ao_task = None
+        self.device_voltage_range=10.0
+        self.device_max_sample_rate=250000 
+        self.device_sample_rate=200000 
+        self.ao_channels="ao0:1"
+        self.do_port="port0/line0:2"
+        self.ai_channel="ai0"
+
+    def set_rate(self,rate):
+        if rate>self.device_max_sample_rate:
+            raise RuntimeError("To large input for smaple rate on this device!")
+        self.device_sample_rate=rate
+
+    def create_ao_wrapper(self, samps_per_chan):
+        return FakeGalvoAoWrapper()
+
+    def create_do_wrapper(self, samps_per_chan):
+        return FakeDoWrapper()
+
+    def create_ai_wrapper(self, ai_vmin,ai_vmax,samps_per_chan):
+        return FakeAiWrapper()
+
+
+
+
+
+
+specs_unidirectional={"rate":200000,
     "fov_voltage":4,
     "pixels_x":512,
     "pixels_y":512,
@@ -183,11 +322,11 @@ specs_unidirectional={"rate":RATE,
     "bidirectional":False}
 
 specs_bidirectional={
-    "rate":RATE,
+    "rate":200000,
     "fov_voltage":4,
-    "pixels_x":512,# we need at least ~8 samples per pixel. 
-    "pixels_y":512,# 512
-    "line_rate":100,#250
+    "pixels_x":200,# we need at least ~8 samples per pixel. 
+    "pixels_y":200,# 512
+    "line_rate":300,#250
     "flyback_frac":0.1,
     "flyback_frame_frac":20/512, #1.5/512
     "bidirectional":True}
@@ -247,7 +386,7 @@ def setup_and_check_pattern(pattern_specs=specs_bidirectional):
     
     # each line starts at line_start[n] (including this point) and ends and line_end[n] (excluding this point).
     line_samples = line_ends - line_starts
-    complete_line_samples=np.diff(line_starts, prepend=0,append=len(pixel_gate))
+    complete_line_samples=np.diff(line_starts,append=len(pixel_gate))
     # the maximum read 
     max_line_read_samples = np.max(complete_line_samples)
     max_line_samples = np.max(line_samples)
@@ -260,8 +399,17 @@ def setup_and_check_pattern(pattern_specs=specs_bidirectional):
     "line_end_indices": line_ends,
     "max_line_samples": max_line_samples,
     "complete_line_samples": complete_line_samples,
-    "max_line_read_samples": max_line_read_samples
+    "max_line_read_samples": max_line_read_samples,
+    "pattern_size": len(pixel_gate),
+    "pixel_gate": pixel_gate,
+    "rate": rate
     }
+
+    if np.sum(complete_line_samples)!=len(pixel_gate):
+        raise RuntimeError("Wrong array size calculations")
+
+
+
     samples_per_pixel = max_line_samples / pattern_specs["pixels_x"]
 
     if check_if_exceeds_limits(np.column_stack((x, y)), rate):
@@ -278,8 +426,6 @@ def setup_and_check_pattern(pattern_specs=specs_bidirectional):
 # Threads
 # ----------------------------
 def consume_from_fifo(fifo,n):
-    while len(fifo) < n:
-        time.sleep(0.0005)  # yield
     out = [fifo.popleft() for _ in range(n)]
     return np.asarray(out, dtype=np.float32)
 
@@ -303,24 +449,29 @@ def detector_thread(ai_task,scan_layout,stop_event,image_queue, pattern_specs=sp
     while not stop_event.is_set():
         samples_per_read = scan_layout["complete_line_samples"][line_idx]
         line_samples=scan_layout["line_samples"][line_idx]
-        fifo.extend(ai_task.read(number_of_samples_per_channel=READ_CHUNK, timeout=5.0))
+        while len(fifo)<samples_per_read:
+            fifo.extend(ai_task.read(READ_CHUNK, timeout=5.0))
         data = consume_from_fifo(fifo,samples_per_read)
         if samples_per_read<line_samples:
             raise RuntimeError(f"Read slice out of range: {samples_per_read} vs {line_samples}")
         if blocking * nx > line_samples:
             raise RuntimeError("Blocking exceeds available samples")
         data = np.asarray(data, dtype=np.float32)
+        # 1) extract the relevant data.
         line=data[:line_samples]
+        # This is irrelevant in most cases (just for safety)
         if len(line) < max_line_samples:
             padded = np.full(max_line_samples, np.nan, dtype=np.float32)
             padded[:len(line)] = line
             line = padded
+        # 2) reordering in case of bidirectional data
+        if bidirectional and (line_idx % 2 == 1):
+            line = line[::-1]
+        # 3) blocking, This needs to be the last step!
         line = np.nanmean(
             line[:nx * blocking].reshape(nx, blocking),
             axis=1
         )
-        if bidirectional and (line_idx % 2 == 1):
-            line = line[::-1]
         frame[line_idx,:] = line
         line_idx += 1
         if line_idx >= ny:
@@ -329,6 +480,7 @@ def detector_thread(ai_task,scan_layout,stop_event,image_queue, pattern_specs=sp
                     image_queue.get_nowait()
                 image_queue.put_nowait(frame.copy())
             except queue.Full:
+                print("AI thread: full image queue.")
                 pass
             line_idx = 0
         if len(fifo)>MAX_FIFO:
@@ -347,8 +499,6 @@ def display_loop(stop_event,image_queue,pattern_specs=specs_bidirectional):
     img = ax.imshow(
         np.zeros((ny, nx)),
         cmap="gray",
-        vmin=0,
-        vmax=ai_vmax,
         origin="upper",
         aspect="auto"
     )
@@ -359,19 +509,37 @@ def display_loop(stop_event,image_queue,pattern_specs=specs_bidirectional):
     t0 = time.time()
     while not stop_event.is_set():
         try:
-            frame = image_queue.get(timeout=0.1)
+            frame = image_queue.get(timeout=0.5)
             img.set_data(frame)
             img.set_clim(frame.min(), frame.max())
             fig.canvas.draw_idle()
             fig.canvas.flush_events()
             plt.pause(0.001)
             frames += 1
-            if time.time() - t0 >= 1.0:
-                print(f"[Display] FPS ~ {frames}")
-                frames = 0
-                t0 = time.time()
+            if frames > 100000:
+                frames=0
+                t0=time.time()
+            elapsed=time.time() - t0
+            if int(elapsed)%5==4:
+                print(f"[Display] FPS ~ {float(frames)/elapsed}")
         except queue.Empty:
             plt.pause(0.001)
+    plt.ioff()
+    plt.close(fig)
+
+def show_image(img_data):
+    import matplotlib.pyplot as plt
+    plt.ion()
+    fig, ax = plt.subplots()
+    img = ax.imshow(
+        img_data,
+        cmap="gray",
+        origin="upper",
+        aspect="auto"
+    )
+    plt.title("Live Confocal Image")
+    plt.colorbar(img, ax=ax)
+    plt.pause(20)
     plt.ioff()
     plt.close(fig)
 
@@ -391,11 +559,16 @@ def run():
     samps_per_read_chan=2*scan_layout["max_line_read_samples"]
     stop_event = threading.Event()
     image_queue = queue.Queue(maxsize=3)
-    tasksfactory=NIDaqTaskFactory()
+    tasksfactory=FakeNIDaqTaskFactory()
     tasksfactory.set_rate(rate)
     ao_task=tasksfactory.create_ao_wrapper(total_scan_samples)
     do_task=tasksfactory.create_do_wrapper(total_scan_samples)
     ai_task=tasksfactory.create_ai_wrapper(ai_vmin,ai_vmax,samps_per_read_chan)
+    ai_task.initialize(scan_layout)
+#    print(ai_task.read(2000,1))
+#    print(ai_task.read(2000,1))
+ #   show_image(ai_task.frame_image)
+#    exit()
     t_ai = threading.Thread(
         target=detector_thread,
         args=(ai_task,scan_layout,stop_event,image_queue, specs_bidirectional),
@@ -425,6 +598,8 @@ def test():
     print("Scan layout:", scan_layout["line_samples"], "samples per line")
     print("Scan layout:", scan_layout["max_line_samples"], "max samples per line")
     print("Scan layout:", scan_layout["complete_line_samples"], "complete line samples (including flyback)")
+    print(len(scan_layout["complete_line_samples"]))
+    print(len(scan_layout["line_samples"]))
 
 if __name__ == "__main__":
     #test()
