@@ -355,7 +355,7 @@ def setup_and_check_pattern(pattern_specs=specs_bidirectional):
     (pixel_gate << 0) |
     (line_trig   << 1) |
     (frame_trig  << 2)
-    ).astype(np.uint8)
+    ).astype(np.uint32)
 
     # Analyze the pixel_gate to find where the signal goes from low to high (start of active pixel period) and from high to low (end of active pixel period). This will help us determine the actual pixel indices and line start indices.
     # diff calculates the differences between consecutive elements. A transition from 0 to 1 will give +1, and a transition from 1 to 0 will give -1. We prepend a 0 to align the indices correctly.
@@ -551,22 +551,25 @@ def show_image(img_data):
 # Main
 # ----------------------------
 def run():
-    ai_vmin, ai_vmax = 0.0, 13.0  # DET36A/M output range into high-Z
+    ai_vmin, ai_vmax = 0.0, 10.0  # DET36A/M output range into high-Z
     ao_data, do_data, scan_layout = setup_and_check_pattern(specs_bidirectional)
     rate=int(specs_bidirectional["rate"])
     total_scan_samples = ao_data.shape[0]
     if total_scan_samples!= do_data.shape[0]:
         raise RuntimeError("No match of scan and trigger samples!")
     # make the reading channel larger than needed for safety
-    samps_per_read_chan=2*scan_layout["max_line_read_samples"]
+    samps_per_read_chan=10*4096   #2*scan_layout["max_line_read_samples"]
     stop_event = threading.Event()
     image_queue = queue.Queue(maxsize=3)
-    tasksfactory=FakeNIDaqTaskFactory()
+    tasksfactory=NIDaqTaskFactory()
     tasksfactory.set_rate(rate)
     ao_task=tasksfactory.create_ao_wrapper(total_scan_samples)
     do_task=tasksfactory.create_do_wrapper(total_scan_samples)
     ai_task=tasksfactory.create_ai_wrapper(ai_vmin,ai_vmax,samps_per_read_chan)
     ai_task.initialize(scan_layout)
+    # auto_start=False by default
+    ao_task.write(ao_data)
+    do_task.write(do_data)
 #    print(ai_task.read(2000,1))
 #    print(ai_task.read(2000,1))
  #   show_image(ai_task.frame_image)
@@ -606,3 +609,11 @@ def test():
 if __name__ == "__main__":
     #test()
     run()
+
+#nidaqmx.errors.DaqError: Task could not be started, because the driver could not write enough data to the device. This was due to system and/or bus-bandwidth limitations.
+
+#Reduce the number of programs your computer is executing concurrently. If possible, perform operations with heavy bus usage sequentially instead of in parallel. If you can't eliminate the problem, contact National Instruments support at ni.com/support.  
+
+#Task Name: _unnamedTask<1>
+
+#Status Code: -200946
