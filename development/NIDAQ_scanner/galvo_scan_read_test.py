@@ -215,7 +215,9 @@ class FakeAiWrapper:
 
     def _set_image(self):
         from PIL import Image
-        p = "/home/georg/0_work/projects_IPHT/adaptive_optics_psf_analysis/ondra_example/scanImaging/scanImaging/instrument/virtual/images/tstimage.png"
+        from pathlib import Path
+        base_path = Path(__file__).resolve().parent
+        p = rf"{base_path}/../../scanImaging/instrument/virtual/images/radial-sine-144.png"
         img = Image.open(p).convert("L")
         img = img.resize((int(self.line_length), int(self.nLines)), resample=Image.BILINEAR)
         arr = np.asarray(img, dtype=np.float32)

@@ -222,6 +222,7 @@ class AdaptiveOpticsSequencer(BaseSequencer):
         print("Starting Adaptive Optics Sequencer Loop")
         print(f"Adaptint the indices: {self.initial_zernike_indices} with initial coefficients (nm): {self.zernike_initial_coefficients_nm} and scan amplitudes (nm): {self.zernike_amplitude_scan_nm}")
         # check if the folder exist, if not create it
+        from scipy.ndimage import laplace
         p = Path(self.recorded_image_folder)
         p.mkdir(parents=True, exist_ok=True)
         # translate zernike indices into full coefficient array
@@ -257,7 +258,7 @@ class AdaptiveOpticsSequencer(BaseSequencer):
                 while num_scan_points<100 and abs(miss_max)!=0:
                     # compute optimal parameter for this mode
                     optimal_value,miss_max,opt_v = self.computeOptimalParametersSimpleInterpolation(
-                        image_stack, parameter_stack, optim_metric=lambda img: np.var(img)-np.mean(img),plot=True) #np.sum(np.gradient(img)[0]**2 + np.gradient(img)[1]**2)
+                        image_stack, parameter_stack, optim_metric=lambda img:  np.mean(laplace(img)**2) / (np.mean(img) + 1e-12),plot=True) #np.sum(np.gradient(img)[0]**2 + np.gradient(img)[1]**2)
                     if miss_max != 0:
                         num_scan_points+=1
                         scan_amplitude *=1.2

@@ -80,8 +80,12 @@ class ScanImaging():
         bhScanner.connect()
         bhScanner.setParameter('threadingNow', True)
 
+        from pathlib import Path
+        base_path = Path(__file__).resolve().parent
+        p = rf"{base_path}/instrument/virtual/images/radial-sine-144.png"
+
                 # path to your gray PNG
-        p = "/home/georg/0_work/projects_IPHT/adaptive_optics_psf_analysis/ondra_example/scanImaging/scanImaging/instrument/virtual/images/tstimage.png"
+ #       p = "/home/georg/0_work/projects_IPHT/adaptive_optics_psf_analysis/ondra_example/scanImaging/scanImaging/instrument/virtual/images/radial-sine-144.png"
         
         # load as grayscale
         img = Image.open(p).convert("L")
