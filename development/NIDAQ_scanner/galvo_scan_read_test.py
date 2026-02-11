@@ -113,6 +113,8 @@ class NIDaqTaskFactory:
         self.device_sample_rate=200000 
         self.ao_channels="ao0:1"
         self.do_port="port0/line0:2"
+        #        DET36A/M BNC center  → Pin 19 (AI 0) Label 0
+        #        DET36A/M BNC shield  → Pin 90  (AI GND) Label triangle with tick
         self.ai_channel="ai0"
 
     def set_rate(self,rate):
@@ -491,43 +493,51 @@ def detector_thread(ai_task,scan_layout,stop_event,image_queue, pattern_specs=sp
                 fifo.popleft()
     print("[AI] Detector thread exiting")
 
+class Display:
+    def __init__(self):
+        import matplotlib.pyplot as plt
+        self.plt=plt
+        
+    def initialize_display(self,pattern_specs):
+        self.nx=pattern_specs["pixels_x"]
+        self.ny=pattern_specs["pixels_y"]
+        self.plt.ion()
+        self.fig, self.ax = self.plt.subplots()
+        self.img = self.ax.imshow(
+            np.zeros((self.ny, self.nx)),
+            cmap="gray",
+            origin="upper",
+            aspect="auto"
+        )
+        self.plt.title("Live Confocal Image")
+        self.plt.colorbar(self.img, ax=self.ax)
 
-def display_loop(stop_event,image_queue,pattern_specs=specs_bidirectional):
-    import matplotlib.pyplot as plt
-    nx=pattern_specs["pixels_x"]
-    ny=pattern_specs["pixels_y"]
-    plt.ion()
-    fig, ax = plt.subplots()
-    img = ax.imshow(
-        np.zeros((ny, nx)),
-        cmap="gray",
-        origin="upper",
-        aspect="auto"
-    )
-    plt.title("Live Confocal Image")
-    plt.colorbar(img, ax=ax)
 
-    frames = 0
-    t0 = time.time()
-    while not stop_event.is_set():
-        try:
-            frame = image_queue.get(timeout=0.5)
-            img.set_data(frame)
-            img.set_clim(frame.min(), frame.max())
-            fig.canvas.draw_idle()
-            fig.canvas.flush_events()
-            plt.pause(0.001)
-            frames += 1
-            if frames > 100000:
-                frames=0
-                t0=time.time()
-            elapsed=time.time() - t0
-            if int(elapsed)%5==4:
-                print(f"[Display] FPS ~ {float(frames)/elapsed}")
-        except queue.Empty:
-            plt.pause(0.001)
-    plt.ioff()
-    plt.close(fig)
+
+    def display_loop(self,stop_event,image_queue):
+        frames = 0
+        t0 = time.time()
+        while not stop_event.is_set():
+            try:
+                frame = image_queue.get(timeout=0.5)
+                self.img.set_data(frame)
+                self.img.set_clim(frame.min(), frame.max())
+                self.fig.canvas.draw_idle()
+                self.fig.canvas.flush_events()
+                self.plt.pause(0.001)
+                frames += 1
+                if frames > 100000:
+                    frames=0
+                    t0=time.time()
+                elapsed=time.time() - t0
+                if int(elapsed)%5==4:
+                    print(f"[Display] FPS ~ {float(frames)/elapsed}")
+            except queue.Empty:
+                self.plt.pause(0.001)
+
+    def close(self):
+        self.plt.ioff()
+        self.plt.close(self.fig)
 
 def show_image(img_data):
     import matplotlib.pyplot as plt
@@ -561,7 +571,9 @@ def run():
     samps_per_read_chan=10*4096   #2*scan_layout["max_line_read_samples"]
     stop_event = threading.Event()
     image_queue = queue.Queue(maxsize=3)
-    tasksfactory=NIDaqTaskFactory()
+    display=Display()
+    display.initialize_display(specs_bidirectional)
+    tasksfactory=FakeNIDaqTaskFactory()
     tasksfactory.set_rate(rate)
     ao_task=tasksfactory.create_ao_wrapper(total_scan_samples)
     do_task=tasksfactory.create_do_wrapper(total_scan_samples)
@@ -583,17 +595,18 @@ def run():
         # arm the tasks:
         ai_task.start()
         do_task.start()
-        time.sleep(0.1)
-        t_ai.start()
         # This has to be last since it starts the sample clock and hence also the other tasks.
         ao_task.start()
-        display_loop(stop_event,image_queue)
+        time.sleep(0.05)
+        t_ai.start()
+        display.display_loop(stop_event,image_queue)
     finally:
         stop_event.set()
         t_ai.join()
         ai_task.stop()
         do_task.stop()
         ao_task.stop()
+        display.close()
         print("All threads stopped.")
 
 def test():
@@ -610,10 +623,3 @@ if __name__ == "__main__":
     #test()
     run()
 
-#nidaqmx.errors.DaqError: Task could not be started, because the driver could not write enough data to the device. This was due to system and/or bus-bandwidth limitations.
-
-#Reduce the number of programs your computer is executing concurrently. If possible, perform operations with heavy bus usage sequentially instead of in parallel. If you can't eliminate the problem, contact National Instruments support at ni.com/support.  
-
-#Task Name: _unnamedTask<1>
-
-#Status Code: -200946
