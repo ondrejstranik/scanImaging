@@ -327,7 +327,7 @@ specs_unidirectional={"rate":200000,
 
 specs_bidirectional={
     "rate":200000,
-    "fov_voltage":4,
+    "fov_voltage":1,
     "pixels_x":200,# we need at least ~8 samples per pixel. 
     "pixels_y":200,# 512
     "line_rate":300,#250
@@ -573,7 +573,7 @@ def run():
     image_queue = queue.Queue(maxsize=3)
     display=Display()
     display.initialize_display(specs_bidirectional)
-    tasksfactory=FakeNIDaqTaskFactory()
+    tasksfactory=NIDaqTaskFactory()
     tasksfactory.set_rate(rate)
     ao_task=tasksfactory.create_ao_wrapper(total_scan_samples)
     do_task=tasksfactory.create_do_wrapper(total_scan_samples)
