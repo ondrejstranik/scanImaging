@@ -32,7 +32,7 @@ class VirtualBHScanner(BaseADetector):
 
     DEFAULT = {'name':'virtualBHScanner',
                'pixelTime': 1e-5, # in [s], time per Pixel
-               'maxPhotonPerPixel': 100, # maximal number of event per pixel
+               'maxPhotonPerPixel': 10, # maximal number of event per pixel
                'macroTimeIncrement': 1e-7, # in [s] time to increase the macrotime counter per one
                'imageSize' : np.array([512,512]),
                'timeSize'  : 2**12, 
@@ -48,10 +48,10 @@ class VirtualBHScanner(BaseADetector):
 
         # probe, which it will scan over. 
         self.virtualProbe = None
-
+        self.maxPhotonPerPixel=self.DEFAULT['maxPhotonPerPixel']
         # variable to generate virtual data
         self.pixelTime = self.DEFAULT['pixelTime'] # dwell time on one pixel
-        self.signalTime = self.pixelTime/self.DEFAULT['maxPhotonPerPixel'] # smallest time between photons
+        self.signalTime = self.pixelTime/self.maxPhotonPerPixel # smallest time between photons
         self.macroTimeIncrement = self.DEFAULT['macroTimeIncrement']
         self.numberOfChannel = self.DEFAULT['numberOfChannel']
         self.timeSize = self.DEFAULT['timeSize']
@@ -75,7 +75,7 @@ class VirtualBHScanner(BaseADetector):
         self.scanSize = (self.imageSize + self.DEFAULT['scanOffSet'])
 
         # maximal position of the scan (for one sample) in subpixels 
-        self.maxScanPosition = int(np.prod(self.scanSize)*(self.DEFAULT['maxPhotonPerPixel']))
+        self.maxScanPosition = int(np.prod(self.scanSize)*(self.maxPhotonPerPixel))
 
         #Probes
         # 1. constant with a thick line
@@ -95,6 +95,14 @@ class VirtualBHScanner(BaseADetector):
 
         # linearize the probe
         self.virtualProbeExtra = self.virtualProbeExtra.reshape(-1)
+
+    def setMaxPhotonPerPixel(self,val):
+        if val<1:
+            return
+        self.maxPhotonPerPixel=int(val)
+        self.signalTime = self.pixelTime/self.maxPhotonPerPixel
+        self.maxScanPosition = int(np.prod(self.scanSize)*(self.maxPhotonPerPixel))
+
 
     def setVirtualProbe(self, virtualProbe):
         ''' set the virtual probe to be scanned '''
@@ -201,10 +209,10 @@ class VirtualBHScanner(BaseADetector):
             #print(f'len(tMacroSaw): {len(tMacroSaw)}')
             
             # new line flag generation
-            newLineFlag = scanRange%(self.scanSize[1]*self.DEFAULT['maxPhotonPerPixel'])==0
+            newLineFlag = scanRange%(self.scanSize[1]*self.maxPhotonPerPixel)==0
             # remove new line flag from rows below sample
             # this rows imitates return of the beam
-            outerRows = np.logical_and(scanRange>np.prod(self.scanSize-self.DEFAULT['scanOffSet']*[1,0])*self.DEFAULT['maxPhotonPerPixel']-1,
+            outerRows = np.logical_and(scanRange>np.prod(self.scanSize-self.DEFAULT['scanOffSet']*[1,0])*self.maxPhotonPerPixel-1,
                                         scanRange< self.maxScanPosition)
             #outerRows = scanRange< self.maxScanPosition
             #print(f'outerRows: {outerRows}')

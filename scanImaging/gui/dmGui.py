@@ -357,7 +357,7 @@ class DMGui(BaseGUI):
         lbl_steps = QLabel("Steps per mode", ao_control_widget)
         spin_steps = QSpinBox(ao_control_widget)
         spin_steps.setRange(1, 500)
-        spin_steps.setValue(getattr(self.aoSequencer, 'num_steps_per_mode', 5))
+        spin_steps.setValue(getattr(self.aoSequencer, 'num_steps_per_mode', 3))
         def _on_steps(v):
             try:
                 if self.aoSequencer is not None:

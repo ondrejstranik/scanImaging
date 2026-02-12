@@ -103,7 +103,7 @@ class ScanImaging():
         # arr = np.repeat(arr[:, :, None], scanner.numberOfChannel, axis=2)
         
         # set as virtual probe
-        bhScanner.setVirtualProbe(arr)
+        #bhScanner.setVirtualProbe(arr)
 
         virtualDMBmc=VirtualDMBmc(name='DMBmc')
         virtualDMBmc.connect()

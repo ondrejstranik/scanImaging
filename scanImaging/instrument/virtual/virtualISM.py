@@ -13,6 +13,46 @@ def generatePSF(aperture_mask, aperture_phase, wavelength):
     psf = (np.abs(psf_c).astype(np.float32))**2
     return psf
 
+import numpy as np
+
+def add_microscopy_noise(image, mean_photons=500, read_noise_e=3, background=0.05):
+    """
+    Add realistic microscopy noise to a clean ground truth image.
+    
+    Parameters:
+    -----------
+    image : ndarray
+        Clean ground truth image (normalized 0-1)
+    mean_photons : float
+        Mean photon count at maximum intensity (higher = less noisy)
+    read_noise_e : float
+        Camera read noise in electrons RMS
+    background : float
+        Constant background fluorescence level (fraction of max)
+    
+    Returns:
+    --------
+    noisy_image : ndarray
+        Image with Poisson + Gaussian noise added
+    """
+    # Add background
+    if background>0:
+        image += background
+        print(f"added {background}")
+    
+    # Poisson noise (photon shot noise): This is added in the scanner
+    if mean_photons>=1:
+        image = np.random.poisson(image * mean_photons).astype(float) / mean_photons
+    
+    # Gaussian noise (read noise)
+    if read_noise_e>0:
+        # Combine and clip to avoid negative values, might be not correct for some detectors.
+        image=np.clip(image + np.random.normal(0, read_noise_e / mean_photons, image.shape), 0, None) 
+
+
+# Example usage:
+# noisy = add_microscopy_noise(ground_truth, mean_photons=1000, read_noise_e=2, background=0.05)
+
 class VirtualISM:
     ''' Virtual Image Scanning Microscope instrument for testing and simulation '''
 
@@ -31,6 +71,7 @@ class VirtualISM:
         self.virtualScanner = kwargs.get('virtualScanner', None)
         self.virtualAdaptiveOptics = kwargs.get('virtualAdaptiveOptics', None)
         self.parameters['lambda'] = kwargs.get('wavelength', 520)  # in nm
+        self.parameters['baseImage']=kwargs.get('baseImage','image1')
         self.parameters['emissionWavelength'] = kwargs.get('emissionWavelength', 520)  # in nm
         self.parameters['numberOfChannelX'] = kwargs.get('numberOfChannelX', channelgridx) 
         self.parameters['numberOfChannelY'] = kwargs.get('numberOfChannelY', channelgridy) 
@@ -40,16 +81,58 @@ class VirtualISM:
         self.parameters['pinholeSize'] = kwargs.get('pinholeSize', 1.0)  # in Airy units
         self.parameters['ismPixelShift'] = kwargs.get('ismPixelShift', 10)  # in pixels
         self.parameters['systemAberrations'] = kwargs.get('systemAberrations', np.zeros(11)) # Zernike modes
+        self.backGroundLevel=0.0
+        self.poissonBackground=0.0
+        self.gaussBackground=0.0
+        from pathlib import Path
+        base_path = Path(__file__).resolve().parent
+        imagepath1 = rf"{base_path}/images/Gemini_Generated_Image_saa5ihsaa5ihsaa5.png"
+        imagepath2 = rf"{base_path}/images/Gemini_Generated_Image_18skaw18skaw18sk.png"
+        imagepath3 = rf"{base_path}/images/radial-sine-144.png"
+        self.imagedict={"image1":imagepath1,"image2":imagepath2,"image3":imagepath3}
+        self.currentimage="empty"
 
     def makeIsmOffsetGrid(self, channelgridx, channelgridy, pixelshift=10):
         ''' create an ISM detector offset grid '''
         offsetgrid = np.array([[i*pixelshift,j*pixelshift] for i in range(channelgridx) for j in range(channelgridy)])
         return offsetgrid
+    
+    def setProbeParameter(self, param):
+        val=param.get("photons_per_pixel",0)
+        if val>=1 and (self.virtualScanner is not None):
+            self.virtualScanner.setMaxPhotonPerPixel(val)
+        val=param.get("background_level",-1)
+        if val>=0.0:
+            self.backGroundLevel=val
+        val=param.get("dark_noise",-1)
+        if val>=0.0:
+            self.poissonBackground=val
+        val=param.get("read_noise",-1)
+        if val>=0:
+            self.gaussBackground=val
+
+    def setImage(self,image:str):
+        imagepath=self.imagedict.get(image,None)
+        if image!=self.currentimage and imagepath is not None:
+            print(f"loading image {imagepath}")
+            from PIL import Image
+            img = Image.open(imagepath).convert("L")
+            rows, cols = self.virtualScanner.imageSize  # numpy array or tuple
+            img = img.resize((int(cols), int(rows)), resample=Image.BILINEAR)
+            # to numpy float32 and normalize to [0,1]
+            arr = np.asarray(img, dtype=np.float32)
+            if arr.max() != 0:
+                arr /= arr.max()
+            self.virtualScanner.setVirtualProbe(arr)  
+            self.base_image = self.virtualScanner.virtualProbe.reshape(self.virtualScanner.imageSize)
+            self.currentimage=image
+
 
     def connect(self, virtualScanner=None,virtualAdaptiveOptics=None):
         ''' simulate connecting to the virtual ISM instrument '''
         if virtualScanner is not None:
             self.virtualScanner = virtualScanner
+            self.setImage("image1")
             if hasattr(self.virtualScanner, 'virtualProbe'):
                 self.base_image = self.virtualScanner.virtualProbe.reshape(self.virtualScanner.imageSize)
         if virtualAdaptiveOptics is not None:
@@ -69,6 +152,7 @@ class VirtualISM:
         # For simplicity, we just return the base image modified by a factor
         # In a real implementation, this would involve complex calculations
         start_time=time.perf_counter()
+        self.setImage(self.getParameter('baseImage'))
         # ensure single-precision for the heavy ops
         def _to_float32(arr):
             arr = np.asarray(arr)
@@ -187,6 +271,7 @@ class VirtualISM:
         if not self.getParameter('microscopeType').lower() == 'ism':
             final_image = np.repeat(final_image[:, :, np.newaxis], channels, axis=2)
         # set the ism image to the virtual scanner
+        add_microscopy_noise(final_image,0,self.gaussBackground,self.backGroundLevel)
         self.virtualScanner.setVirtualProbe(final_image)
         print(f"ISM image updated in {time.perf_counter()-start_time:.2f} seconds.")
 

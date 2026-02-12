@@ -213,7 +213,7 @@ class AdaptiveOpticsSequencer(BaseSequencer):
             pass
         self.deformable_mirror.display_surface()
         # wait a bit for the system to stabilize
-        time.sleep(0.5)
+        time.sleep(0.1)
         image = self.image_provider.getImage()
         return image
 
@@ -299,6 +299,7 @@ class AdaptiveOpticsSequencer(BaseSequencer):
             imageSet.append(image)
             parameter_set.append(initial_coefficients_full.copy())
             opt_v_set.append(opt_v)
+            self._updateImageAndDM(current_coefficients=initial_coefficients_full,zernike_index=0,val=0)
             try:
                 self._notify_dependents(params={'final_coefficients': initial_coefficients_full.copy()})
             except Exception as e:
