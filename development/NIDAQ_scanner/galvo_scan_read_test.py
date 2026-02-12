@@ -165,13 +165,17 @@ class NIDaqTaskFactory:
             raise RuntimeError("AO must be created first")
         from nidaqmx.constants import AcquisitionType,Edge
         ai_task = self.nidaqmx.Task()
-        ai_task.ai_channels.add_ai_voltage_chan(f"{self.device}/{self.ai_channel}", min_val=ai_vmin, max_val=ai_vmax)
+        ai_task.ai_channels.add_ai_voltage_chan(f"{self.device}/{self.ai_channel}",
+                                                 min_val=ai_vmin, max_val=ai_vmax,
+                                                 terminal_config=self.nidaqmx.constants.TerminalConfiguration.RSE
+                                                 )
         ai_task.timing.cfg_samp_clk_timing(
             rate=self.device_sample_rate,
             source=self._sample_clock,
             sample_mode=AcquisitionType.CONTINUOUS,
             samps_per_chan=samps_per_chan
         )
+        
         return AiWrapper(ai_task)
 
 
