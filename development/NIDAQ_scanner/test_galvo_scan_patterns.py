@@ -19,7 +19,7 @@ Notes:
 from __future__ import annotations
 import time
 import numpy as np
-from safe_scan_pattern import safe_scan_pattern, stop_outputs, periodic_gradient, periodic_second_gradient, check_if_exceeds_limits, print_pattern_metrics
+from safe_scan_pattern import safe_scan_pattern, stop_outputs, periodic_gradient, periodic_second_gradient, check_if_exceeds_limits, print_pattern_metrics,set_voltage
 
 
 
@@ -371,6 +371,14 @@ def main():
         print("nidaqmx is not installed or device not available; streaming disabled.")
         print("You can use the 'd' display option on a machine with matplotlib installed.")
         return
+
+    choice = input("Do you want to set a specific voltage value (y/N): ").strip().lower()
+    while choice.startswith('y'):
+        xvolt = float(input("input x voltage: ").strip())
+        yvolt = float(input("input y voltage: ").strip())
+        print("Setting voltage value")
+        set_voltage(AO_CHANNELS,xvolt,yvolt)
+        choice = input("Do you want to set a specific voltage value (y/N): ").strip().lower()
 
     input("Press Enter to start streaming (or Ctrl-C to cancel)...")
 

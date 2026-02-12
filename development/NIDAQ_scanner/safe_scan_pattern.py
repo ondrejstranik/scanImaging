@@ -24,6 +24,19 @@ def stop_outputs(device_channels: str) -> None:
         print("Warning: could not explicitly write zeros to device:", exc)
     print("Outputs set to 0 V (best-effort).")
 
+def set_voltage(device_channels: str,x,y) -> None:
+    if x>10.0 or x<-10.0 or y>10.0 or y<-10.0:
+        return
+    try:
+        import nidaqmx
+        with nidaqmx.Task() as t:
+            t.ao_channels.add_ao_voltage_chan(device_channels, min_val=-10.0, max_val=10.0)
+            # many devices accept writing a single sample per channel to set output
+            t.write([x, y], auto_start=True)
+    except Exception as exc:
+        print("Warning: could not explicitly write to device:", exc)
+    print(f"Outputs set to {x},{y} V.")
+
 def periodic_gradient(x, dt):
     return (np.roll(x, -1) - np.roll(x, 1)) / (2 * dt)
 
