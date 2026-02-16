@@ -74,6 +74,25 @@ def make_circle(radius: float = V_RANGE / 2, points: int = POINTS) -> np.ndarray
     theta = np.linspace(0, 2 * np.pi, points, endpoint=False)
     return np.column_stack((radius * np.cos(theta), radius * np.sin(theta)))
 
+# make simple sine wave in x or y or diagonal one or diagonal 2 for testing
+def make_sine_wave(size: float = V_RANGE, points: int = POINTS, direction: str = 'x') -> np.ndarray:
+    t = np.linspace(0, 1, points, endpoint=False)
+    if direction == 'x':
+        x = size * np.sin(2 * np.pi * t)
+        y = np.zeros_like(x)
+    elif direction == 'y':
+        y = size * np.sin(2 * np.pi * t)
+        x = np.zeros_like(y)
+    elif direction == 'diag1':
+        x = size * np.sin(2 * np.pi * t)
+        y = size * np.sin(2 * np.pi * t)
+    elif direction == 'diag2':
+        x = size * np.sin(2 * np.pi * t)
+        y = -size * np.sin(2 * np.pi * t)
+    else:
+        raise ValueError("Invalid direction; choose from 'x', 'y', 'diag1', 'diag2'")
+    return np.column_stack((x, y))
+
 
 def make_dwell_square(size: float = V_RANGE, edge_points: int = POINTS, dwell_points: int | None = None) -> np.ndarray:
     if dwell_points is None:
@@ -292,15 +311,35 @@ def main():
     except Exception:
         print("keyboard module not available; interactive switching disabled.")
         keyboard = None
-
+    # input actual voltage range and sample rate
+    vrange=V_RANGE
+    rate=RATE
+    try:
+        v_input = input(f"Enter voltage range for display (default ±{V_RANGE} V): ").strip()
+        if v_input:
+            tmp = float(v_input)
+            if tmp > 0 and tmp <= 5.0:
+                vrange = tmp
+        r_input = input(f"Enter sample rate in Hz (default {RATE}): ").strip()
+        if r_input:
+            tmp = int(r_input)
+            if tmp > 0 and tmp <= 200000:
+                rate = tmp
+    except Exception as exc:
+        print("Invalid input, using defaults:", exc)   
+    
     # Precompute patterns (same as before)
     pattern_map = {
-        'square': make_dwell_square(size=V_RANGE, edge_points=POINTS),
-        'circle': make_circle(radius=V_RANGE / 2, points=POINTS),
-        'cross': make_smooth_cross(size=V_RANGE, points=POINTS),
+        'square': make_dwell_square(size=vrange, edge_points=POINTS),
+        'circle': make_circle(radius=vrange / 2, points=POINTS),
+        'cross': make_smooth_cross(size=vrange, points=POINTS),
+        'sineX': make_sine_wave(size=vrange, points=POINTS, direction='x'),
+        'sineY': make_sine_wave(size=vrange, points=POINTS, direction='y'),
+        'sineDiag1': make_sine_wave(size=vrange, points=POINTS, direction='diag1'),
+        'sineDiag2': make_sine_wave(size=vrange, points=POINTS, direction='diag2'),
         'rasterU': generate_safe_raster_pattern(
-    rate=RATE,
-    fov_voltage=4,
+    rate=rate,
+    fov_voltage=vrange,
     pixels_x=512,
     pixels_y=512,
     line_rate=250,  # 100 lines per second
@@ -309,8 +348,8 @@ def main():
     bidirectional=False
     ),
     'rasterB': generate_safe_raster_pattern(
-    rate=RATE,
-    fov_voltage=4,
+    rate=rate,
+    fov_voltage=vrange,
     pixels_x=512,
     pixels_y=512,# 512
     line_rate=300,#250
@@ -322,7 +361,7 @@ def main():
 # make_raster(samples_per_line=100, lines_per_frame=100, v_range=V_RANGE),
     print("Parameters:")
     print(f"  AO channels: {AO_CHANNELS}")
-    print(f"  Voltage range visual: ±{V_RANGE} V")
+    print(f"  Voltage range visual: ±{V_RANGE} V, pattern range {vrange} V")
     print(f"  Sample rate: {RATE} sps")
     print(f"  Points per pattern (default): {POINTS}")
     print()
@@ -337,7 +376,7 @@ def main():
     current = 'circle'
     while choice.startswith('d'):
         # interactive display selection (works even without nidaqmx)
-        print("Select pattern to display: 's'=square, 'c'=circle, 'x'=cross, 'u'=raster unidirectional, 'b'=raster bidirectional")
+        print("Select pattern to display: 's'=square, 'c'=circle, 'x'=cross, 'u'=raster unidirectional, 'b'=raster bidirectional, 'WX'=sine wave in X, 'WY'=sine wave in Y, 'WD1'=sine wave diagonal 1, 'WD2'=sine wave diagonal 2")
         sel = input("Choice: ").strip().lower()
         if sel == 's':
             patt = pattern_map['square']
@@ -349,6 +388,14 @@ def main():
             patt = pattern_map['rasterU']
         elif sel == 'b':
             patt = pattern_map['rasterB']
+        elif sel == 'wx':
+            patt = pattern_map['sineX']
+        elif sel == 'wy':
+            patt = pattern_map['sineY']
+        elif sel == 'wd1':
+            patt = pattern_map['sineDiag1']
+        elif sel == 'wd2':
+            patt = pattern_map['sineDiag2']
         else:
             print("Unknown selection, showing circle.")
             patt = pattern_map['circle']

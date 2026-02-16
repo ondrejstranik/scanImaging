@@ -321,7 +321,7 @@ class FakeNIDaqTaskFactory:
 
 
 specs_unidirectional={"rate":200000,
-    "fov_voltage":4,
+    "fov_voltage":1.5,
     "pixels_x":512,
     "pixels_y":512,
     "line_rate":250,  # 100 lines per second
@@ -331,7 +331,7 @@ specs_unidirectional={"rate":200000,
 
 specs_bidirectional={
     "rate":200000,
-    "fov_voltage":1,
+    "fov_voltage":1.5,
     "pixels_x":200,# we need at least ~8 samples per pixel. 
     "pixels_y":200,# 512
     "line_rate":300,#250
