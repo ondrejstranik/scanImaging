@@ -24,6 +24,8 @@ class ScanImaging():
         from scanImaging.instrument.DMBmc import DMBmc
         from scanImaging.gui.dmGui import DMGui
         from viscope.gui.cameraViewGUI import CameraViewGUI
+        from scanImaging.instrument.adaptiveOpticsSequencer import AdaptiveOpticsSequencer
+        from scanImaging.instrument.adaptiveOpticsSequencer import ScannerImageProvider
         import time
 
         bhScanner = BHScanner(name='BHScanner')
@@ -37,6 +39,10 @@ class ScanImaging():
         dmDevice = DMBmc(name='DMBmc')
         dmDevice.connect()
 
+        scannerImageProvider=ScannerImageProvider(scanner=bhScanner,processor=bhPro)
+        aoSequencer=AdaptiveOpticsSequencer(viscope=viscope,name='AdaptiveOpticsSequencer')
+        aoSequencer.connect(deformable_mirror=dmDevice,image_provider=scannerImageProvider)
+
         adGui  = ScannerBHGUI(viscope)
         adGui.setDevice(bhScanner,processor=bhPro)
 
@@ -48,6 +54,7 @@ class ScanImaging():
 
         dmGui=DMGui(viscope,vWindow='new')
         dmGui.setDevice(dmDevice)
+        dmGui.setAdaptiveOpticsSequenceser(aoSequencer)
 
         viscope.run()
         bhPro.disconnect()
@@ -116,7 +123,8 @@ class ScanImaging():
         bhScanner.disconnect()
 
 if __name__ == "__main__":
-    # choos to run virtual or real
+    ScanImaging.runVirtual()
+    # choose to run virtual or real
     choice=input("Run virtual (v) or real (r) scanner? (v/r): ").strip().lower()
     if choice == 'v':
         ScanImaging.runVirtual()

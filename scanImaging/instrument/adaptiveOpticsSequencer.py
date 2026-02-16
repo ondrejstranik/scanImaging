@@ -15,6 +15,14 @@ class ScannerImageProvider:
         self.timeout_seconds = 120
         self.continous_acquisition = False
 
+    def startContinuousMode(self):
+        self.continous_acquisition = True
+        self.scanner_device.startAcquisition()
+
+    def stopContinuousMode(self):
+        self.scanner_device.stopAcquisition()
+        self.continous_acquisition = False
+
     def getImage(self):
         if self.scanner_device is None or self.processor is None:
             raise Exception("Scanner device or processor not set in ScannerImageProvider.")
@@ -24,9 +32,11 @@ class ScannerImageProvider:
             self.scanner_device.startAcquisition()
         # wait until the fullAccumulatedImageObtained is True or timeout
         start_time = time.time()
+        self.failed_acquisitions=0
         while not self.processor.fullAccumulatedImageObtained():
             if self.timeout_seconds > 0 and time.time() - start_time > self.timeout_seconds:
                 self.failed_acquisitions += 1
+                print(f"Trying to get image {self.failed_acquisitions}")
                 raise TimeoutError("Timeout while waiting for full accumulated image.")
             time.sleep(0.2)
         if not self.continous_acquisition:
@@ -235,6 +245,7 @@ class AdaptiveOpticsSequencer(BaseSequencer):
         parameter_set = []
         opt_v_set = []
         # set current coefficient
+#        self.image_provider.startContinuousMode()
         current_coefficients = initial_coefficients_full.copy()
         ''' finite loop of the sequence'''
         for ii in range(self.optim_iterations):
@@ -305,7 +316,7 @@ class AdaptiveOpticsSequencer(BaseSequencer):
             except Exception as e:
                 print("Error notifying dependents after iteration:", e)
                 pass
-
+#        self.image_provider.stopContinuousMode()
         np.save(self.recorded_image_folder + '/' + 'imageSet',imageSet)
         np.save(self.recorded_image_folder + '/' + 'parameterSet',parameter_set)
         np.save(self.recorded_image_folder + '/' + 'optimalValuesSet',opt_v_set)
