@@ -123,13 +123,7 @@ class ScanImaging():
         bhScanner.disconnect()
 
 if __name__ == "__main__":
-    ScanImaging.runVirtual()
-    # choose to run virtual or real
-    choice=input("Run virtual (v) or real (r) scanner? (v/r): ").strip().lower()
-    if choice == 'v':
-        ScanImaging.runVirtual()
-    elif choice == 'r':
-         ScanImaging.runReal()
-    else:
-        print("Invalid choice. Please enter 'v' for virtual or 'r' for real.")
+    # This file should not be run directly
+    # Use main_virtual.py or main_real.py instead
+    print("Please run main_virtual.py or main_real.py instead")
 

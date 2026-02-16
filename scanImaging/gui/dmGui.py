@@ -7,8 +7,12 @@ import napari
 #from hmflux.gui.slmViewer import SLMViewer
 from magicgui import magicgui
 import numpy as np
-from qtpy.QtWidgets import QLineEdit, QSizePolicy, QPushButton, QVBoxLayout, QWidget, QLabel, QSpinBox, QHBoxLayout, QComboBox
+from qtpy.QtWidgets import QLineEdit, QSizePolicy, QPushButton, QVBoxLayout, QWidget, QLabel, QSpinBox, QHBoxLayout, QComboBox, QCheckBox
 from viscope.gui.napariViewer.napariViewer import NapariViewer
+import matplotlib
+matplotlib.use('Qt5Agg')
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
 
 
 
@@ -36,6 +40,11 @@ class DMGui(BaseGUI):
         self.imageDM= np.zeros((self.sizeX,self.sizeY))
         self.zernikeCoeffs = np.zeros(15)
         self.active_aperture = 0
+
+        # AO metrics plotting
+        self.ao_metric_figure = Figure(figsize=(5, 4), dpi=100)
+        self.ao_metric_canvas = FigureCanvas(self.ao_metric_figure)
+        self.ao_metric_ax = self.ao_metric_figure.add_subplot(111)
         # initiate napari viewer
         self.viewer = NapariViewer(show=False)
         # napari can not work in a dock Window,
@@ -368,6 +377,22 @@ class DMGui(BaseGUI):
         h2.addWidget(lbl_steps); h2.addWidget(spin_steps)
         vlay.addLayout(h2)
 
+        # continuous scan checkbox
+        h2b = QHBoxLayout()
+        lbl_continuous = QLabel("Continuous scan", ao_control_widget)
+        chk_continuous = QCheckBox(ao_control_widget)
+        chk_continuous.setChecked(getattr(self.aoSequencer, 'continuous_scan', False))
+        def _on_continuous(state):
+            try:
+                if self.aoSequencer is not None:
+                    self.aoSequencer.continuous_scan = bool(state)
+                    print(f"Continuous scan set to: {bool(state)}")
+            except Exception as e:
+                print(f"Error setting continuous scan: {e}")
+        chk_continuous.stateChanged.connect(_on_continuous)
+        h2b.addWidget(lbl_continuous); h2b.addWidget(chk_continuous)
+        vlay.addLayout(h2b)
+
         # optimization method
         h3 = QHBoxLayout()
         lbl_method = QLabel("Optim method", ao_control_widget)
@@ -388,7 +413,7 @@ class DMGui(BaseGUI):
         h4 = QHBoxLayout()
         lbl_idxs = QLabel("Initial Zernike indices", ao_control_widget)
         le_idxs = QLineEdit(ao_control_widget)
-        default_idxs = getattr(self.aoSequencer, 'initial_zernike_indices', [4,11,2])
+        default_idxs = getattr(self.aoSequencer, 'initial_zernike_indices', [4,5,6])
         le_idxs.setText(','.join(map(str, default_idxs)))
         def _on_idxs():
             print("AOGui: setting initial zernike indices")
@@ -429,6 +454,18 @@ class DMGui(BaseGUI):
         vlay.addLayout(h5)
 
         self.dw = self.viewer.window.add_dock_widget(ao_control_widget, name="Adaptive Optics", area='right')
+        if self.dockWidgetParameter is not None:
+            self.viewer.window._qt_window.tabifyDockWidget(self.dockWidgetParameter, self.dw)
+        self.dockWidgetParameter = self.dw
+
+        # Add AO metrics plot widget
+        self.ao_metric_ax.set_xlabel('Parameter value')
+        self.ao_metric_ax.set_ylabel('Metric value')
+        self.ao_metric_ax.set_title('AO Optimization Metric')
+        self.ao_metric_ax.grid(True)
+        self.ao_metric_figure.tight_layout()
+
+        self.dw = self.viewer.window.add_dock_widget(self.ao_metric_canvas, name="AO Metrics Plot", area='right')
         if self.dockWidgetParameter is not None:
             self.viewer.window._qt_window.tabifyDockWidget(self.dockWidgetParameter, self.dw)
         self.dockWidgetParameter = self.dw
@@ -480,6 +517,32 @@ class DMGui(BaseGUI):
         self.imageDM = self._preprocess_image(self.imager.image)
         self.active_aperture = self.imager.active_aperture
         self.imageLayer.data = self.imageDM
+    
+    def updataAOMetrics(self,metric_values,parameter_stack):
+        ''' callback from the adaptive optics sequencer when new metric values are available'''
+        print("DMGui: received AO metrics update")
+        print(f" Metric values: {metric_values}")
+        print(f" Parameter stack: {parameter_stack}")
+
+        # Update the plot
+        try:
+            self.ao_metric_ax.clear()
+            self.ao_metric_ax.plot(parameter_stack, metric_values, 'o-', linewidth=2, markersize=6)
+            self.ao_metric_ax.set_xlabel('Parameter value (nm)')
+            self.ao_metric_ax.set_ylabel('Metric value')
+            self.ao_metric_ax.set_title('AO Optimization Metric')
+            self.ao_metric_ax.grid(True, alpha=0.3)
+
+            # Highlight the maximum
+            max_idx = np.argmax(metric_values)
+            self.ao_metric_ax.plot(parameter_stack[max_idx], metric_values[max_idx],
+                                   'r*', markersize=15, label=f'Max: {metric_values[max_idx]:.2f}')
+            self.ao_metric_ax.legend()
+
+            self.ao_metric_figure.tight_layout()
+            self.ao_metric_canvas.draw()
+        except Exception as e:
+            print(f"Error updating AO metrics plot: {e}")
 
 
 

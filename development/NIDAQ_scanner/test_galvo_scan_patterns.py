@@ -401,10 +401,10 @@ def main():
             patt = pattern_map['circle']
 
         x, y = patt.T
-        print_pattern_metrics(patt, RATE)
-        plot_pattern_xy(patt,RATE)
-        plot_pattern(x, y, interval_ms=10*1000.0 / RATE)
-        if check_if_exceeds_limits(patt, RATE):
+        print_pattern_metrics(patt, rate)
+        plot_pattern_xy(patt,rate)
+        plot_pattern(x, y, interval_ms=10*1000.0 / rate)
+        if check_if_exceeds_limits(patt, rate):
             print("Pattern exceeds galvo limits. Do not stream this pattern to hardware.")
         # after display, ask whether to continue to streaming
         current= sel if sel in pattern_map else 'circle'
@@ -446,14 +446,14 @@ def main():
             data = np.asarray(pattern, dtype=float).reshape(samples, 2).T
 
             # show metrics for the pattern about to be streamed
-            print_pattern_metrics(pattern, RATE)
-            if check_if_exceeds_limits(pattern, RATE):
+            print_pattern_metrics(pattern, rate)
+            if check_if_exceeds_limits(pattern, rate):
                 print("Pattern exceeds galvo limits; not streaming. Choose a different pattern.")
                 current = None
                 continue
             with nidaqmx.Task() as ao_task:
                 ao_task.ao_channels.add_ao_voltage_chan(AO_CHANNELS, min_val=-10.0, max_val=10.0)
-                ao_task.timing.cfg_samp_clk_timing(RATE, sample_mode=AcquisitionType.CONTINUOUS, samps_per_chan=samples)
+                ao_task.timing.cfg_samp_clk_timing(rate, sample_mode=AcquisitionType.CONTINUOUS, samps_per_chan=samples)
                 try:
                     ao_task.out_stream.regen_mode = RegenerationMode.ALLOW_REGENERATION
                 except Exception:

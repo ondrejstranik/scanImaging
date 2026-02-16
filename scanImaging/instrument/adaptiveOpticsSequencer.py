@@ -62,12 +62,17 @@ class AdaptiveOpticsSequencer(BaseSequencer):
         self.recorded_image_folder= "Data/AdaptiveOptics"
         self.optim_iterations=3
         self.optim_method='simple_interpolation'  # other methods can be implemented
-        self.initial_zernike_indices=[4,11,2]  # defocus, astigmatism, spherical
+        self.initial_zernike_indices=[4,5,6]  # defocus, astigmatism, spherical
         self.zernike_initial_coefficients_nm=[50,30,20]
         self.zernike_amplitude_scan_nm=[20,15,10]
         self.num_steps_per_mode=3
         self.imageSet=[]
         self._dependents = []
+        self.continuous_scan=False
+        self.image_log=False
+        self.print_plot=False
+        self.parameter_stack=None
+        self.metric_values=None
 
     def setInitialZernikeModes(self,indices,initial_coefficients_nm=None,amplitude_scan_nm=None):
         if indices is None or len(indices)==0:
@@ -131,10 +136,12 @@ class AdaptiveOpticsSequencer(BaseSequencer):
     def _notify_dependents(self, params=None):
         if not hasattr(self, '_dependents'):
             return
-        print("AO Sequencer: notifying dependents...")
+#        print("AO Sequencer: notifying dependents...")
         for d in list(self._dependents):
             print(f" Notifying dependent type: {type(d)}, details: {d}")
             d.on_sequencer_update( params=params)
+            if hasattr(d, 'updataAOMetrics') and self.parameter_stack is not None and self.metric_values is not None:
+                d.updataAOMetrics(self.metric_values,self.parameter_stack)
 #            try:
 #                if hasattr(d, 'on_sequencer_update'):
 #                    d.on_sequencer_update(image=image, params=params)
@@ -192,6 +199,8 @@ class AdaptiveOpticsSequencer(BaseSequencer):
         # equally spaced    
             #   optimal_parameter = x1 + 0.5 * ((y0 - y2) / denom) * (x2 - x0) / 2
             optimal_parameter = x1 + 0.5 * (yd1*xd2*xd2 + yd2*xd1*xd1) / denom
+        self.parameter_stack=parameter_stack
+        self.metric_values=metric_values
         return optimal_parameter,miss_max,metric_values[max_index]
 
 
@@ -233,8 +242,9 @@ class AdaptiveOpticsSequencer(BaseSequencer):
         print(f"Adaptint the indices: {self.initial_zernike_indices} with initial coefficients (nm): {self.zernike_initial_coefficients_nm} and scan amplitudes (nm): {self.zernike_amplitude_scan_nm}")
         # check if the folder exist, if not create it
         from scipy.ndimage import laplace
-        p = Path(self.recorded_image_folder)
-        p.mkdir(parents=True, exist_ok=True)
+        if self.image_log:
+            p = Path(self.recorded_image_folder)
+            p.mkdir(parents=True, exist_ok=True)
         # translate zernike indices into full coefficient array
         initial_coefficients_full = np.zeros(np.max(self.initial_zernike_indices)+1)
         if len(self.initial_zernike_indices) != len(self.zernike_initial_coefficients_nm) or len(self.initial_zernike_indices) != len(self.zernike_amplitude_scan_nm):
@@ -245,81 +255,90 @@ class AdaptiveOpticsSequencer(BaseSequencer):
         parameter_set = []
         opt_v_set = []
         # set current coefficient
-#        self.image_provider.startContinuousMode()
+        if self.continuous_scan:
+            self.image_provider.startContinuousMode()
         current_coefficients = initial_coefficients_full.copy()
-        ''' finite loop of the sequence'''
-        for ii in range(self.optim_iterations):
-            # loop over each zernike mode
-            for mode_idx, zernike_index in enumerate(self.initial_zernike_indices):
-                # prepare scan parameters
-                scan_amplitude = self.zernike_amplitude_scan_nm[mode_idx]
-                num_scan_points=self.num_steps_per_mode
-                scan_values = np.linspace(initial_coefficients_full[zernike_index] - scan_amplitude/2,
-                                              initial_coefficients_full[zernike_index] + scan_amplitude/2,
-                                              num_scan_points)
-                image_stack = []
-                parameter_stack = []
-                for val in scan_values:
-                    current_coefficients[zernike_index] = val
-                    # acquire image
-                    image_stack.append(self._updateImageAndDM(current_coefficients=current_coefficients,zernike_index=zernike_index,val=val))
-                    parameter_stack.append(val)
-                    yield  # yield to allow interruption
-                miss_max=1
-                while num_scan_points<100 and abs(miss_max)!=0:
-                    # compute optimal parameter for this mode
-                    optimal_value,miss_max,opt_v = self.computeOptimalParametersSimpleInterpolation(
-                        image_stack, parameter_stack, optim_metric=lambda img:  np.mean(laplace(img)**2) / (np.mean(img) + 1e-12),plot=True) #np.sum(np.gradient(img)[0]**2 + np.gradient(img)[1]**2)
-                    if miss_max != 0:
-                        num_scan_points+=1
-                        scan_amplitude *=1.2
-                    else:
-                        scan_amplitude *= 0.7
-                    added_value=None
-                    if miss_max<0:
-                        added_value=parameter_stack[0]-scan_amplitude/2
-                        if optimal_value<parameter_stack[0]:
-                            added_value=optimal_value - scan_amplitude/2
-                        #append at the beginning
-                        parameter_stack=[added_value]+parameter_stack
-                    if miss_max>0:
-                        added_value=parameter_stack[-1]+scan_amplitude/2
-                        if optimal_value>parameter_stack[-1]:
-                            added_value=optimal_value + scan_amplitude/2
-                        # append at the end
-                        parameter_stack=parameter_stack+[added_value]
-                    if added_value is not None:
-                        current_coefficients[zernike_index] = added_value
+        try:
+            ''' finite loop of the sequence'''
+            for ii in range(self.optim_iterations):
+                # loop over each zernike mode
+                for mode_idx, zernike_index in enumerate(self.initial_zernike_indices):
+                    # prepare scan parameters
+                    scan_amplitude = self.zernike_amplitude_scan_nm[mode_idx]
+                    num_scan_points=self.num_steps_per_mode
+                    scan_values = np.linspace(initial_coefficients_full[zernike_index] - scan_amplitude/2,
+                                                  initial_coefficients_full[zernike_index] + scan_amplitude/2,
+                                                  num_scan_points)
+                    image_stack = []
+                    parameter_stack = []
+                    for val in scan_values:
+                        current_coefficients[zernike_index] = val
                         # acquire image
-                        image=self._updateImageAndDM(current_coefficients=current_coefficients,zernike_index=zernike_index,val=added_value)
-                        image_stack=[image]+image_stack if miss_max<0 else image_stack+[image]
+                        image_stack.append(self._updateImageAndDM(current_coefficients=current_coefficients,zernike_index=zernike_index,val=val))
+                        parameter_stack.append(val)
                         yield  # yield to allow interruption
+                    miss_max=1
+                    while num_scan_points<100 and abs(miss_max)!=0:
+                        # compute optimal parameter for this mode
+                        optimal_value,miss_max,opt_v = self.computeOptimalParametersSimpleInterpolation(
+                            image_stack, parameter_stack, optim_metric=lambda img:  np.mean(laplace(img)**2) / (np.mean(img) + 1e-12),plot=self.print_plot) #np.sum(np.gradient(img)[0]**2 + np.gradient(img)[1]**2)
+                        if miss_max != 0:
+                            num_scan_points+=1
+                            scan_amplitude *=1.2
+                        else:
+                            scan_amplitude *= 0.7
+                        added_value=None
+                        if miss_max<0:
+                            added_value=parameter_stack[0]-scan_amplitude/2
+                            if optimal_value<parameter_stack[0]:
+                                added_value=optimal_value - scan_amplitude/2
+                            #append at the beginning
+                            parameter_stack=[added_value]+parameter_stack
+                        if miss_max>0:
+                            added_value=parameter_stack[-1]+scan_amplitude/2
+                            if optimal_value>parameter_stack[-1]:
+                                added_value=optimal_value + scan_amplitude/2
+                            # append at the end
+                            parameter_stack=parameter_stack+[added_value]
+                        if added_value is not None:
+                            current_coefficients[zernike_index] = added_value
+                            # acquire image
+                            image=self._updateImageAndDM(current_coefficients=current_coefficients,zernike_index=zernike_index,val=added_value)
+                            image_stack=[image]+image_stack if miss_max<0 else image_stack+[image]
+                            yield  # yield to allow interruption
 
-                initial_coefficients_full[zernike_index] = optimal_value
-                current_coefficients[zernike_index] = optimal_value
-                self.deformable_mirror.set_phase_map_from_zernike(current_coefficients)
-                self.deformable_mirror.display_surface()
-                # notify dependents about updated coefficients after optimization of this mode
+                    initial_coefficients_full[zernike_index] = optimal_value
+                    current_coefficients[zernike_index] = optimal_value
+                    self.deformable_mirror.set_phase_map_from_zernike(current_coefficients)
+                    self.deformable_mirror.display_surface()
+                    # notify dependents about updated coefficients after optimization of this mode
+                    try:
+                        self._notify_dependents(image=None, params={'coefficients': initial_coefficients_full.copy()})
+                    except Exception:
+                        pass
+                    print(f"Optimized Zernike index {zernike_index} to value {optimal_value} nm")
+
+                image = self.image_provider.getImage()
+                imageSet.append(image)
+                parameter_set.append(initial_coefficients_full.copy())
+                opt_v_set.append(opt_v)
+                self._updateImageAndDM(current_coefficients=initial_coefficients_full,zernike_index=0,val=0)
                 try:
-                    self._notify_dependents(image=None, params={'coefficients': initial_coefficients_full.copy()})
-                except Exception:
+                    self._notify_dependents(params={'final_coefficients': initial_coefficients_full.copy()})
+                except Exception as e:
+                    print("Error notifying dependents after iteration:", e)
                     pass
-                print(f"Optimized Zernike index {zernike_index} to value {optimal_value} nm")
-            
-            image = self.image_provider.getImage()
-            imageSet.append(image)
-            parameter_set.append(initial_coefficients_full.copy())
-            opt_v_set.append(opt_v)
-            self._updateImageAndDM(current_coefficients=initial_coefficients_full,zernike_index=0,val=0)
-            try:
-                self._notify_dependents(params={'final_coefficients': initial_coefficients_full.copy()})
-            except Exception as e:
-                print("Error notifying dependents after iteration:", e)
-                pass
-#        self.image_provider.stopContinuousMode()
-        np.save(self.recorded_image_folder + '/' + 'imageSet',imageSet)
-        np.save(self.recorded_image_folder + '/' + 'parameterSet',parameter_set)
-        np.save(self.recorded_image_folder + '/' + 'optimalValuesSet',opt_v_set)
+
+            # Save results after successful completion
+            if self.image_log:
+                np.save(self.recorded_image_folder + '/' + 'imageSet',imageSet)
+                np.save(self.recorded_image_folder + '/' + 'parameterSet',parameter_set)
+                np.save(self.recorded_image_folder + '/' + 'optimalValuesSet',opt_v_set)
+        finally:
+            # Always stop continuous mode if it was started, even if loop is interrupted
+            if self.continuous_scan:
+                print("Stopping continuous acquisition mode...")
+                self.image_provider.stopContinuousMode()
 
 
 if __name__ == "__main__":
