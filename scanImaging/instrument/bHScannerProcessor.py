@@ -99,9 +99,29 @@ class BHScannerProcessor(BaseProcessor):
         return self.flagFullAccumulation
     
     def getAccumulatedImage(self):
-        ''' get accumulated image 
+        ''' get accumulated image
          Reduced to  x and y (no time/channel)'''
         return self.dataCubeFinished.sum(axis=(0,1))
+
+    def reset_accumulation(self):
+        """Reset accumulation state for fresh start
+
+        Call this to recover from incomplete scans or to prepare for new acquisition.
+        Resets the accumulation counter and flag so next scan starts clean.
+        """
+        self.accumulationIdx = 0
+        self.flagFullAccumulation = False
+        self.currentYindex = -1
+
+    def get_accumulation_progress(self):
+        """Return current accumulation progress (0.0 to 1.0) for monitoring
+
+        Returns:
+            float: Progress fraction, 0.0 = not started, 1.0 = complete
+        """
+        if self.numberOfAccumulation == 0:
+            return 0.0
+        return self.accumulationIdx / self.numberOfAccumulation
 
     def setParameter(self,name, value):
         ''' set parameter of the spectral camera'''

@@ -1,18 +1,25 @@
 from viscope.instrument.base.baseSequencer import BaseSequencer
 from pathlib import Path
 import numpy as np
-import keyboard
 import time
 
 
 class ScannerImageProvider:
     ''' class for providing images from the scanner'''
 
-    def __init__(self,scanner=None,processor=None):
+    def __init__(self, scanner=None, processor=None,
+                 timeout=30,              # Reduced from 120s
+                 max_retries=3,           # New: retry on timeout
+                 enable_health_check=False,  # New: configurable (OFF by default)
+                 enable_auto_restart=True):  # New: auto-restart on failure
         self.scanner_device = scanner
         self.processor = processor
+        self.timeout_seconds = timeout
+        self.max_retries = max_retries
+        self.enable_health_check = enable_health_check
+        self.enable_auto_restart = enable_auto_restart
         self.failed_acquisitions = 0
-        self.timeout_seconds = 120
+        self.total_acquisitions = 0
         self.continous_acquisition = False
 
     def startContinuousMode(self):
@@ -28,27 +35,174 @@ class ScannerImageProvider:
         time.sleep(0.5)
         self.startContinuousMode()
 
-    def getImage(self):
+    def health_check(self, timeout=5):
+        """Optional health check before acquisition (may bleach sample if enabled)
+
+        Args:
+            timeout: Timeout in seconds for health check
+
+        Returns:
+            bool: True if scanner appears healthy, False otherwise
+        """
+        if not self.enable_health_check:
+            return True  # Skip if disabled
+
+        print("Performing scanner health check...")
+        try:
+            # Quick test acquisition with short timeout
+            test_img = self.getImage(timeout=timeout, skip_health_check=True)
+            if test_img is None or np.sum(test_img) < 1e-6:
+                print("WARNING: Health check failed - no signal detected")
+                return False
+            print("Scanner health check passed")
+            return True
+        except TimeoutError:
+            print("WARNING: Health check timeout - scanner may be stalled")
+            return False
+        except Exception as e:
+            print(f"WARNING: Health check error: {e}")
+            return False
+
+    def restart_scanner(self):
+        """Restart scanner hardware to recover from stalled state
+
+        Returns:
+            bool: True if restart successful, False otherwise
+        """
+        print("Restarting scanner...")
+        try:
+            # Stop acquisition
+            self.scanner_device.stopAcquisition()
+            time.sleep(0.5)
+
+            # Reset processor state if method exists
+            if hasattr(self.processor, 'reset_accumulation'):
+                self.processor.reset_accumulation()
+            else:
+                # Fallback: use existing resetCounter method
+                self.processor.resetCounter()
+            time.sleep(0.5)
+
+            # Restart acquisition
+            self.scanner_device.startAcquisition()
+            time.sleep(1.0)  # Allow scanner to stabilize
+
+            print("Scanner restarted successfully")
+            return True
+        except Exception as e:
+            print(f"ERROR: Scanner restart failed: {e}")
+            return False
+
+    def get_statistics(self):
+        """Return acquisition statistics for monitoring
+
+        Returns:
+            dict: Statistics including total, failed, and success rate
+        """
+        success_rate = 1.0
+        if self.total_acquisitions > 0:
+            failed_count = self.failed_acquisitions
+            success_rate = 1.0 - (failed_count / self.total_acquisitions)
+        return {
+            'total': self.total_acquisitions,
+            'failed': self.failed_acquisitions,
+            'success_rate': success_rate
+        }
+
+    def getImage(self, timeout=None, skip_health_check=False):
+        """Get accumulated image with retry logic
+
+        Args:
+            timeout: Override default timeout (seconds)
+            skip_health_check: Skip health check even if enabled (for health check itself)
+
+        Returns:
+            numpy.ndarray: Accumulated image
+
+        Raises:
+            TimeoutError: If all retry attempts fail
+        """
         if self.scanner_device is None or self.processor is None:
             raise Exception("Scanner device or processor not set in ScannerImageProvider.")
-        self.processor.resetCounter()
-        if not self.continous_acquisition:
-            self.scanner_device.stopAcquisition()
-            self.scanner_device.startAcquisition()
-        # wait until the fullAccumulatedImageObtained is True or timeout
-        start_time = time.time()
-        self.failed_acquisitions=0
-        while not self.processor.fullAccumulatedImageObtained():
-            if self.timeout_seconds > 0 and time.time() - start_time > self.timeout_seconds:
+
+        if timeout is None:
+            timeout = self.timeout_seconds
+
+        self.total_acquisitions += 1
+        last_exception = None
+
+        # Retry loop
+        for attempt in range(self.max_retries):
+            try:
+                # Reset processor counter
+                self.processor.resetCounter()
+
+                # Start acquisition if not in continuous mode
+                if not self.continous_acquisition:
+                    self.scanner_device.stopAcquisition()
+                    self.scanner_device.startAcquisition()
+
+                # Wait until full accumulated image obtained or timeout
+                start_time = time.time()
+                while not self.processor.fullAccumulatedImageObtained():
+                    if timeout > 0 and time.time() - start_time > timeout:
+                        raise TimeoutError(
+                            f"Timeout waiting for image (attempt {attempt+1}/{self.max_retries}, "
+                            f"{timeout}s timeout)")
+                    time.sleep(0.2)
+
+                # Stop acquisition if not in continuous mode
+                if not self.continous_acquisition:
+                    self.scanner_device.stopAcquisition()
+
+                # Get the image
+                image = self.processor.getAccumulatedImage()
+                self.scanner_device.new_image_available = False
+
+                # Success - reset failure counter if we had previous failures
+                if self.failed_acquisitions > 0:
+                    print(f"Acquisition recovered after {self.failed_acquisitions} consecutive failures")
+                    self.failed_acquisitions = 0
+
+                return image
+
+            except TimeoutError as e:
+                last_exception = e
                 self.failed_acquisitions += 1
-                print(f"Trying to get image {self.failed_acquisitions}")
-                raise TimeoutError("Timeout while waiting for full accumulated image.")
-            time.sleep(0.2)
-        if not self.continous_acquisition:
-            self.scanner_device.stopAcquisition()
-        image = self.processor.getAccumulatedImage()
-        self.scanner_device.new_image_available = False
-        return image
+                print(f"Acquisition timeout: {e}")
+
+                # Check if we should retry
+                if attempt < self.max_retries - 1:
+                    print(f"Retrying... ({attempt+2}/{self.max_retries})")
+
+                    # Try automatic restart if enabled
+                    if self.enable_auto_restart and not skip_health_check:
+                        if self.restart_scanner():
+                            # Wait a bit before retry
+                            time.sleep(0.5)
+                            continue
+                        else:
+                            print("Scanner restart failed, trying again anyway...")
+
+                    # Reset processor and retry even if restart failed
+                    if hasattr(self.processor, 'reset_accumulation'):
+                        self.processor.reset_accumulation()
+                    time.sleep(0.5)
+                else:
+                    # All retries exhausted
+                    print(f"ERROR: Image acquisition failed after {self.max_retries} attempts")
+                    raise
+
+            except Exception as e:
+                # Unexpected error - don't retry, just fail
+                self.failed_acquisitions += 1
+                print(f"ERROR: Unexpected error during image acquisition: {e}")
+                raise
+
+        # Should not reach here, but just in case
+        if last_exception:
+            raise last_exception
+        return None
 
 class AdaptiveOpticsSequencer(BaseSequencer):
 
@@ -83,6 +237,12 @@ class AdaptiveOpticsSequencer(BaseSequencer):
 
         # Logging control
         self.verbose=True  # Set to False to reduce logging output
+
+        # Scanner robustness settings
+        self.scanner_timeout = 30  # seconds (reduced from 120s for faster feedback)
+        self.scanner_max_retries = 5  # number of retry attempts on timeout
+        self.scanner_enable_health_check = False  # OFF by default to avoid bleaching
+        self.scanner_enable_auto_restart = True  # automatically restart scanner on failure
 
         # Optimization metrics
         self.selected_metric='laplacian_variance'
@@ -167,6 +327,12 @@ class AdaptiveOpticsSequencer(BaseSequencer):
             self.deformable_mirror = value
         if name== 'image_provider':
             self.image_provider = value
+            # Apply scanner robustness configuration to image provider
+            if self.image_provider is not None and isinstance(self.image_provider, ScannerImageProvider):
+                self.image_provider.timeout_seconds = self.scanner_timeout
+                self.image_provider.max_retries = self.scanner_max_retries
+                self.image_provider.enable_health_check = self.scanner_enable_health_check
+                self.image_provider.enable_auto_restart = self.scanner_enable_auto_restart
 
 
     def getParameter(self,name):
