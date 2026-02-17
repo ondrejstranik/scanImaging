@@ -22,6 +22,11 @@ class ScannerImageProvider:
     def stopContinuousMode(self):
         self.scanner_device.stopAcquisition()
         self.continous_acquisition = False
+    
+    def restartContinuousMode(self):
+        self.stopContinuousMode()
+        time.sleep(0.5)
+        self.startContinuousMode()
 
     def getImage(self):
         if self.scanner_device is None or self.processor is None:
