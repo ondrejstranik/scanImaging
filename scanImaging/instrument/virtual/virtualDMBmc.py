@@ -47,6 +47,7 @@ class VirtualDMBmc(BaseSLM):
         self.actuators=None
         self.is_connected = False
         self._dependents = []
+        self.current_zernike_coefficients = None
 
     def connect(self, serial_number='MultiUSB000', **kwargs):
         ''' connect to the instrument '''
@@ -136,6 +137,11 @@ class VirtualDMBmc(BaseSLM):
         self.surface=FakeDoubleVector(self.width*self.width)
         self.image=simzern.zernike_phase_map(rms_zernike_nm,self.width,self.width,self.active_aperture)
         self._update_surface_from_image()
+        self.current_zernike_coefficients = rms_zernike_nm
+
+    def get_current_coefficients(self):
+        return self.current_zernike_coefficients
+
 
     def register_dependent(self, device):
         """Register a dependent device to be notified on DM updates."""

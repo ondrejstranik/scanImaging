@@ -95,6 +95,7 @@ class DMBmc(BaseSLM):
         self.width = 0
         self.sizeX = 0
         self.sizeY = 0
+        self.current_zernike_coefficients = None
         # surface in contrast to image, is a cpp array with the phase map
         self.surface=None
         super().__init__(name=name, **kwargs)
@@ -215,7 +216,11 @@ class DMBmc(BaseSLM):
         self.set_phase_map_nm(image)
         self.display_surface()
 
+    def get_current_coefficients(self):
+        return self.current_zernike_coefficients
+
     def set_phase_map_from_zernike(self, rms_zernike_nm):
+        self.current_zernike_coefficients = rms_zernike_nm
         self.surface=self.bmc.DoubleVector(self.width*self.width)
         # TODO: active_aperature is zero here since it will be handled in dispay_surface. Is this consistent?
         err_code, self.surface = self.dm.zernike_surface(rms_zernike_nm, 0, 0)

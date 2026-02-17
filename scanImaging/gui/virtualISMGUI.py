@@ -150,65 +150,118 @@ class VirtualISMGui(BaseGUI):
         layout2.addWidget(self.probe_widget.native)
         tab2.setLayout(layout2)
 
+        # State Save/Load tab
+        tab3 = QWidget()
+        layout3 = QVBoxLayout()
+
+        # Save state button
+        def _save_state_clicked():
+            if self.device is None:
+                print("No VirtualISM device set")
+                return
+            try:
+                from qtpy.QtWidgets import QInputDialog
+                filepath, ok = QInputDialog.getText(
+                    tab3,
+                    "Save VirtualISM State",
+                    "Enter filename (will add .npz):",
+                    text="virtualISM_state"
+                )
+                if ok and filepath:
+                    if not filepath.endswith('.npz'):
+                        filepath = filepath + '.npz'
+                    self.device.save_state(filepath)
+            except Exception as e:
+                print(f"Error saving VirtualISM state: {e}")
+
+        # Load state button
+        def _load_state_clicked():
+            if self.device is None:
+                print("No VirtualISM device set")
+                return
+            try:
+                from qtpy.QtWidgets import QInputDialog
+                filepath, ok = QInputDialog.getText(
+                    tab3,
+                    "Load VirtualISM State",
+                    "Enter filename to load:",
+                    text="virtualISM_state.npz"
+                )
+                if ok and filepath:
+                    self.device.load_state(filepath)
+                    # Update the image after loading
+                    self.device.updateImage()
+
+                    # Update GUI widgets to reflect loaded state
+                    params = self.device.parameters
+
+                    # Update ISM parameter widgets
+                    try:
+                        # Convert mode string to enum
+                        mode_str = params.get('microscopeType', 'widefield')
+                        if mode_str == 'widefield':
+                            self.parameter_widget.mode.value = Mode.WIDEFIELD
+                        elif mode_str == 'confocal':
+                            self.parameter_widget.mode.value = Mode.CONFOCAL
+                        elif mode_str == 'ISM':
+                            self.parameter_widget.mode.value = Mode.ISM
+
+                        # Convert base_image string to enum
+                        base_img_str = params.get('baseImage', 'image1')
+                        if base_img_str == 'image1':
+                            self.parameter_widget.base_image.value = BaseImage.IMAGE1
+                        elif base_img_str == 'image2':
+                            self.parameter_widget.base_image.value = BaseImage.IMAGE2
+                        elif base_img_str == 'image3':
+                            self.parameter_widget.base_image.value = BaseImage.IMAGE3
+
+                        self.parameter_widget.lambda_val.value = params.get('lambda', 520)
+                        self.parameter_widget.emission_wavelength_val.value = params.get('emissionWavelength', 520)
+                        self.parameter_widget.na_val.value = params.get('NA', 1.4)
+                        self.parameter_widget.pinhole_diameter_in_AU_val.value = params.get('pinholeSize', 1.0)
+                        self.parameter_widget.channels_valx.value = params.get('numberOfChannelX', 4)
+                        self.parameter_widget.channels_valy.value = params.get('numberOfChannelY', 4)
+                        self.parameter_widget.pixel_size_val.value = params.get('pixelSize', 5)
+
+                        # Format system aberrations as comma-separated string
+                        sys_aberr = params.get('systemAberrations', [])
+                        if isinstance(sys_aberr, (list, np.ndarray)):
+                            self.parameter_widget.system_aberrations.value = ', '.join(map(str, sys_aberr))
+                        else:
+                            self.parameter_widget.system_aberrations.value = "0, 0, 0"
+                    except Exception as e:
+                        print(f"Error updating ISM parameter widgets: {e}")
+
+                    # Update probe parameter widgets
+                    try:
+                        self.probe_widget.photons_per_pixel.value = getattr(self.device, 'maxPhotonPerPixel', 10) 
+                        self.probe_widget.background_level.value = getattr(self.device, 'backGroundLevel', 0.01)
+                        self.probe_widget.dark_noise.value = 0.0  # Not stored separately in current implementation
+                        self.probe_widget.read_noise.value = getattr(self.device, 'gaussBackground', 0.0)
+                    except Exception as e:
+                        print(f"Error updating probe parameter widgets: {e}")
+
+                    print("VirtualISM state loaded and GUI updated successfully")
+
+            except Exception as e:
+                print(f"Error loading VirtualISM state: {e}")
+
+        btn_save_state = QPushButton("Save State", tab3)
+        btn_load_state = QPushButton("Load State", tab3)
+        btn_save_state.clicked.connect(_save_state_clicked)
+        btn_load_state.clicked.connect(_load_state_clicked)
+
+        layout3.addWidget(btn_save_state)
+        layout3.addWidget(btn_load_state)
+        layout3.addStretch()  # Push buttons to top
+        tab3.setLayout(layout3)
+
         tab_widget.addTab(tab1, "ISM Parameters")
         tab_widget.addTab(tab2, "Probe Parameters")
+        tab_widget.addTab(tab3, "State Save/Load")
 
         self.dw = self.vWindow.addParameterGui(tab_widget, name=self.DEFAULT['nameGUI'])
 
-
-
-    def __setWidgetOld(self):
-        ''' prepare the gui '''
-        @magicgui(call_button='Update ISM Image', layout='vertical')
-        def parameter_widget(
-            mode: Mode = Mode.WIDEFIELD,
-            lambda_val: float = 520,
-            emission_wavelength_val: float = 520,
-            na_val: float = 1.4,
-            pinhole_diameter_in_AU_val: float = 1.0,
-            channels_valx: int = 4,
-            channels_valy: int = 4,
-            pixel_size_val: float = 5,
-            system_aberrations: str = "0, 0, 0",
-        ):
-            self.virtualISM_parameters['mode'] = mode.value
-            self.virtualISM_parameters['lambda'] = float(lambda_val)
-            self.virtualISM_parameters['emission_wavelength'] = float(emission_wavelength_val)
-            self.virtualISM_parameters['NA'] = float(na_val)
-            self.virtualISM_parameters['pinhole_diameter_in_AU'] = float(pinhole_diameter_in_AU_val)
-            self.virtualISM_parameters['numberOfChannelX'] = int(channels_valx)
-            self.virtualISM_parameters['numberOfChannelY'] = int(channels_valy)
-            self.virtualISM_parameters['numberOfChannel'] = int(channels_valx * channels_valy)
-            self.virtualISM_parameters['pixelSize'] = float(pixel_size_val)
-            # parse system aberrations from a textual vector input (e.g. "0, 0.1, -0.02")
-            s = str(system_aberrations)
-            s = s.replace(';', ' ').replace(',', ' ').replace('[', ' ').replace(']', ' ').replace('(', ' ').replace(')', ' ')
-            parts = [p for p in s.split() if p]
-            coeffs = []
-            for p in parts:
-                try:
-                    coeffs.append(float(p))
-                except ValueError:
-                    # ignore non-numeric tokens
-                    pass
-            self.virtualISM_parameters['systemAberrations'] = coeffs
-            if self.device is not None:
-                self.device.setParameter('microscopeType', self.virtualISM_parameters['mode'])
-                self.device.setParameter('lambda', self.virtualISM_parameters['lambda'])
-                self.device.setParameter('emissionWavelength', self.virtualISM_parameters['emission_wavelength'])
-                self.device.setParameter('numberOfChannelX', self.virtualISM_parameters['numberOfChannelX'])
-                self.device.setParameter('numberOfChannelY', self.virtualISM_parameters['numberOfChannelY'])
-                self.device.setParameter('NA', self.virtualISM_parameters['NA'])
-                self.device.setParameter('pinholeSize', self.virtualISM_parameters['pinhole_diameter_in_AU'])
-                self.device.setParameter('pixelSize', self.virtualISM_parameters['pixelSize'])
-                # send parsed Zernike coefficients vector to the device
-                try:
-                    self.device.setParameter('systemAberrations', self.virtualISM_parameters.get('systemAberrations', []))
-                except Exception:
-                    pass
-                self.device.updateImage()
-        self.parameter_widget = parameter_widget
-        self.dw = self.vWindow.addParameterGui(self.parameter_widget, name=self.DEFAULT['nameGUI'])
  
     def setDevice(self, device):
         ''' set the device to control '''

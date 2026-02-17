@@ -84,6 +84,9 @@ class VirtualISM:
         self.backGroundLevel=0.0
         self.poissonBackground=0.0
         self.gaussBackground=0.0
+        self.maxPhotonPerPixel=10
+        self.virtualScanner=None
+        self.virtualAdaptiveOptics=None
         from pathlib import Path
         base_path = Path(__file__).resolve().parent
         imagepath1 = rf"{base_path}/images/Gemini_Generated_Image_saa5ihsaa5ihsaa5.png"
@@ -101,6 +104,7 @@ class VirtualISM:
         val=param.get("photons_per_pixel",0)
         if val>=1 and (self.virtualScanner is not None):
             self.virtualScanner.setMaxPhotonPerPixel(val)
+            self.maxPhotonPerPixel=val
         val=param.get("background_level",-1)
         if val>=0.0:
             self.backGroundLevel=val
@@ -288,3 +292,82 @@ class VirtualISM:
     def getParameter(self, param_name):
         ''' get a parameter value '''
         return self.parameters.get(param_name, None)
+
+    def save_state(self, filepath):
+        """Save the current VirtualISM state to file for reproducible testing
+
+        Args:
+            filepath: Path to save state (will add .npz if not present)
+
+        Returns:
+            str: Path where state was saved
+        """
+        from datetime import datetime
+
+        # Ensure .npz extension
+        if not filepath.endswith('.npz'):
+            filepath += '.npz'
+
+        # Collect all state
+        state = {
+            'parameters': self.parameters.copy(),
+            'backGroundLevel': self.backGroundLevel,
+            'poissonBackground': self.poissonBackground,
+            'gaussBackground': self.gaussBackground,
+            'photons_per_pixel': self.maxPhotonPerPixel,
+            'currentimage': self.currentimage,
+            'timestamp': datetime.now().isoformat(),
+            'name': self.name
+        }
+
+        # Save with numpy
+        np.savez(filepath, **{k: np.array(v, dtype=object) if not isinstance(v, (np.ndarray, int, float)) else v
+                              for k, v in state.items()})
+
+        print(f"Saved VirtualISM state to: {filepath}")
+        return filepath
+
+    def load_state(self, filepath):
+        """Load VirtualISM state from file
+
+        Args:
+            filepath: Path to load state from
+
+        Returns:
+            dict: Loaded state data
+        """
+        # Load data
+        data = np.load(filepath, allow_pickle=True)
+
+        # Restore parameters
+        if 'parameters' in data:
+            params = data['parameters'].item() if data['parameters'].ndim == 0 else data['parameters']
+            self.parameters = params
+            print(f"Loaded parameters: {list(params.keys())}")
+
+        # Restore noise settings
+        if 'backGroundLevel' in data:
+            self.backGroundLevel = float(data['backGroundLevel'])
+        if 'poissonBackground' in data:
+            self.poissonBackground = float(data['poissonBackground'])
+        if 'gaussBackground' in data:
+            self.gaussBackground = float(data['gaussBackground'])
+
+        if 'photons_per_pixel' in data:
+            self.maxPhotonPerPixel = int(data['photons_per_pixel'])
+            if self.virtualScanner is not None:
+                self.virtualScanner.setMaxPhotonPerPixel(self.maxPhotonPerPixel)
+        # Restore current image
+        if 'currentimage' in data:
+            current_img = str(data['currentimage'])
+            # Force reload of image
+            self.currentimage = "empty"
+            self.setImage(current_img)
+
+        # Print metadata
+        if 'timestamp' in data:
+            print(f"Loaded VirtualISM state from: {data['timestamp']}")
+
+        print(f"VirtualISM state loaded from: {filepath}")
+
+        return {k: data[k] for k in data.files}

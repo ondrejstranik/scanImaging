@@ -345,6 +345,83 @@ class DMGui(BaseGUI):
         vlay.addWidget(btn_start)
         vlay.addWidget(btn_stop)
 
+        # Save/Load coefficients buttons with simple text input (avoids Qt dialog crashes)
+        def _save_coeffs_clicked():
+            if self.aoSequencer is None:
+                print("No AO sequencer set")
+                return
+            try:
+                from qtpy.QtWidgets import QInputDialog
+                filepath, ok = QInputDialog.getText(
+                    ao_control_widget,
+                    "Save AO Coefficients",
+                    "Enter filename (will add .npz):",
+                    text="ao_coefficients"
+                )
+                if ok and filepath:
+                    # Add .npz extension if not present
+                    if not filepath.endswith('.npz'):
+                        filepath = filepath + '.npz'
+                    self.aoSequencer.save_coefficients(filepath)
+            except Exception as e:
+                print(f"Error saving coefficients: {e}")
+
+        def _load_coeffs_clicked():
+            if self.aoSequencer is None:
+                print("No AO sequencer set")
+                return
+            try:
+                from qtpy.QtWidgets import QInputDialog
+                filepath, ok = QInputDialog.getText(
+                    ao_control_widget,
+                    "Load AO Coefficients",
+                    "Enter filename to load:",
+                    text="ao_coefficients.npz"
+                )
+                if ok and filepath:
+                    data = self.aoSequencer.load_coefficients(filepath)
+                    loaded_coeffs = data['coefficients']
+
+                    # Apply to DM immediately
+                    if hasattr(self.aoSequencer, 'apply_coefficients_to_dm'):
+                        self.aoSequencer.apply_coefficients_to_dm(loaded_coeffs)
+
+                    # Update GUI display
+                    self.zernikeCoeffs = loaded_coeffs.copy()
+                    self.generateDisplayImage()
+                    self._updateDeviceSurface()
+                    self._update_zernike_display()
+
+                    # Update sliders if applicable (for indices 4-11)
+                    try:
+                        if len(self.zernikeCoeffs) > 11:
+                            names = [
+                                "zernike_4", "zernike_5", "zernike_6", "zernike_7",
+                                "zernike_8", "zernike_9", "zernike_10", "zernike_11"
+                            ]
+                            for i, name in enumerate(names):
+                                idx = i + 4
+                                if hasattr(self.zernikeSlidersGui, name):
+                                    widget = getattr(self.zernikeSlidersGui, name)
+                                    if hasattr(widget, 'value'):
+                                        widget.value = float(self.zernikeCoeffs[idx])
+                    except Exception as e:
+                        print(f"Note: Could not update slider values: {e}")
+
+                    print(f"AO coefficients loaded from {filepath} and applied to GUI")
+
+            except Exception as e:
+                print(f"Error loading coefficients: {e}")
+
+        h_saveload = QHBoxLayout()
+        btn_save = QPushButton("Save Coeffs", ao_control_widget)
+        btn_load = QPushButton("Load Coeffs", ao_control_widget)
+        btn_save.clicked.connect(_save_coeffs_clicked)
+        btn_load.clicked.connect(_load_coeffs_clicked)
+        h_saveload.addWidget(btn_save)
+        h_saveload.addWidget(btn_load)
+        vlay.addLayout(h_saveload)
+
         # iterations
         h = QHBoxLayout()
         lbl_it = QLabel("Optim iterations", ao_control_widget)
@@ -393,6 +470,38 @@ class DMGui(BaseGUI):
         h2b.addWidget(lbl_continuous); h2b.addWidget(chk_continuous)
         vlay.addLayout(h2b)
 
+        # use current DM state checkbox
+        h2c = QHBoxLayout()
+        lbl_use_dm = QLabel("Init from DM state", ao_control_widget)
+        chk_use_dm = QCheckBox(ao_control_widget)
+        chk_use_dm.setChecked(getattr(self.aoSequencer, 'use_current_dm_state', True))
+        def _on_use_dm(state):
+            try:
+                if self.aoSequencer is not None:
+                    self.aoSequencer.use_current_dm_state = bool(state)
+                    print(f"Initialize from DM state set to: {bool(state)}")
+            except Exception as e:
+                print(f"Error setting use_current_dm_state: {e}")
+        chk_use_dm.stateChanged.connect(_on_use_dm)
+        h2c.addWidget(lbl_use_dm); h2c.addWidget(chk_use_dm)
+        vlay.addLayout(h2c)
+
+        # verbose logging checkbox
+        h2d = QHBoxLayout()
+        lbl_verbose = QLabel("Verbose logging", ao_control_widget)
+        chk_verbose = QCheckBox(ao_control_widget)
+        chk_verbose.setChecked(getattr(self.aoSequencer, 'verbose', True))
+        def _on_verbose(state):
+            try:
+                if self.aoSequencer is not None:
+                    self.aoSequencer.verbose = bool(state)
+                    print(f"Verbose logging set to: {bool(state)}")
+            except Exception as e:
+                print(f"Error setting verbose: {e}")
+        chk_verbose.stateChanged.connect(_on_verbose)
+        h2d.addWidget(lbl_verbose); h2d.addWidget(chk_verbose)
+        vlay.addLayout(h2d)
+
         # optimization method
         h3 = QHBoxLayout()
         lbl_method = QLabel("Optim method", ao_control_widget)
@@ -409,6 +518,39 @@ class DMGui(BaseGUI):
         cb_method.currentTextChanged.connect(_on_method)
         h3.addWidget(lbl_method); h3.addWidget(cb_method)
         vlay.addLayout(h3)
+
+        # optimization metric selector
+        h3b = QHBoxLayout()
+        lbl_metric = QLabel("Optimization metric", ao_control_widget)
+        cb_metric = QComboBox(ao_control_widget)
+        metrics = ['laplacian_variance', 'brenner', 'normalized_variance', 'tenengrad', 'gradient_squared']
+        metric_descriptions = {
+            'laplacian_variance': 'Laplacian (sensitive)',
+            'brenner': 'Brenner (robust)',
+            'normalized_variance': 'Variance (simple)',
+            'tenengrad': 'Tenengrad (standard)',
+            'gradient_squared': 'Gradient (fast)'
+        }
+        cb_metric.addItems([f"{m} - {metric_descriptions.get(m, '')}" for m in metrics])
+        current_metric = getattr(self.aoSequencer, 'selected_metric', 'laplacian_variance')
+        try:
+            current_idx = metrics.index(current_metric)
+            cb_metric.setCurrentIndex(current_idx)
+        except (ValueError, AttributeError):
+            cb_metric.setCurrentIndex(0)
+
+        def _on_metric(idx):
+            try:
+                if self.aoSequencer is not None:
+                    selected = metrics[idx]
+                    self.aoSequencer.selected_metric = selected
+                    print(f"Optimization metric set to: {selected}")
+            except Exception as e:
+                print(f"Error setting metric: {e}")
+        cb_metric.currentIndexChanged.connect(_on_metric)
+        h3b.addWidget(lbl_metric); h3b.addWidget(cb_metric)
+        vlay.addLayout(h3b)
+
         # initial zernike indices (comma-separated)
         h4 = QHBoxLayout()
         lbl_idxs = QLabel("Initial Zernike indices", ao_control_widget)
@@ -518,7 +660,7 @@ class DMGui(BaseGUI):
         self.active_aperture = self.imager.active_aperture
         self.imageLayer.data = self.imageDM
     
-    def updataAOMetrics(self,metric_values,parameter_stack):
+    def updateAOMetrics(self,metric_values,parameter_stack):
         ''' callback from the adaptive optics sequencer when new metric values are available'''
         print("DMGui: received AO metrics update")
         print(f" Metric values: {metric_values}")
