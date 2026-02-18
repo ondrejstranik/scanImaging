@@ -18,6 +18,7 @@ class ScannerBHGUI(BaseGUI):
         # widget
         self.parameterADetectorGui = None
         self.parameter2ADetectorGui = None
+        self.parameterTimingGui = None
 
         # prepare the gui of the class
         ScannerBHGUI.__setWidget(self)        
@@ -44,6 +45,22 @@ class ScannerBHGUI(BaseGUI):
             ):
             self.processor.numberOfAccumulation = numberOfAccumulation
             self.processor.generateDataCube = False if continuous else True
+
+        @magicgui(auto_call=True)
+        def parameterTimingGui(
+            line_period_ms: Annotated[float, {"label": "Line Period (ms)", "min": 0.1, "max": 1000.0, "step": 0.1}] = 50.0,
+            active_fraction: Annotated[float, {"label": "Active Fraction", "min": 0.1, "max": 1.0, "step": 0.01}] = 0.801
+            ):
+            """Scanner timing parameters
+
+            Line Period: Total time for one scan line including flyback [ms]
+            Active Fraction: Fraction of line period used for active scanning (rest is flyback)
+
+            These parameters control how photon arrival times are mapped to pixel positions.
+            Adjust if scan speed changes or signal appears misaligned.
+            """
+            self.processor.setParameter('line_period_ms', line_period_ms)
+            self.processor.setParameter('active_fraction', active_fraction)
 
         @magicgui(call_button='Restart Scanner')
         def restartScannerGui():
@@ -87,10 +104,12 @@ class ScannerBHGUI(BaseGUI):
         # add widget parameterCameraGui
         self.parameterADetectorGui = parameterADetectorGui
         self.parameter2ADetectorGui = parameter2ADetectorGui
+        self.parameterTimingGui = parameterTimingGui
         self.restartScannerGui = restartScannerGui
 
         self.dw =self.vWindow.addParameterGui(self.parameterADetectorGui,name=self.DEFAULT['nameGUI'])
         self.dw =self.vWindow.addParameterGui(self.parameter2ADetectorGui,name=self.DEFAULT['nameGUI']+'_2')
+        self.dw =self.vWindow.addParameterGui(self.parameterTimingGui,name=self.DEFAULT['nameGUI']+'_timing')
         self.dw =self.vWindow.addParameterGui(self.restartScannerGui,name=self.DEFAULT['nameGUI']+'_restart')
 
 
@@ -104,6 +123,8 @@ class ScannerBHGUI(BaseGUI):
         self.parameterADetectorGui.acquisition.value = self.device.acquiring
         self.parameter2ADetectorGui.numberOfAccumulation.value = self.processor.numberOfAccumulation
         self.parameter2ADetectorGui.continuous.value = self.processor.generateDataCube
+        self.parameterTimingGui.line_period_ms.value = self.processor.line_period_ms
+        self.parameterTimingGui.active_fraction.value = self.processor.active_fraction
 
         self.dw.setWindowTitle(self.device.name)
 

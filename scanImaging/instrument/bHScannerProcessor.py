@@ -17,7 +17,9 @@ from scanImaging.algorithm.signalProcessFunction import resetSignal, flagToCount
 class BHScannerProcessor(BaseProcessor):
     ''' class to collect data from virtual scanner'''
     DEFAULT = {'name': 'ScannerProcessor',
-                'pixelTime': 90*445/512, # dwell time on one pixel
+                'pixelTime': 90*445/512, # dwell time on one pixel (LEGACY - now calculated from line_period_ms and active_fraction)
+                'line_period_ms': 50.0, # total time for one scan line including flyback [ms]
+                'active_fraction': (90*445)/(50.0*1000), # fraction of line period used for active scanning (= 0.801)
                 'newPageTimeFlag': 5, # threshold for new page in the macroTime
                 'numberOfAccumulation': 3, # number of images to accumulate
                 'generateDataCube': False, # if false only overview image is generated,
@@ -37,7 +39,9 @@ class BHScannerProcessor(BaseProcessor):
         self.stackSize = 0
 
         # parameters for calculation
-        self.pixelTime = self.DEFAULT['pixelTime'] # dwell time on one pixel
+        self.line_period_ms = self.DEFAULT['line_period_ms']  # total time per scan line [ms]
+        self.active_fraction = self.DEFAULT['active_fraction']  # fraction of line used for active scanning
+        self.pixelTime = self.DEFAULT['pixelTime']  # dwell time on one pixel [µs] - recalculated when scanner is set
         self.numberOfAccumulation = self.DEFAULT['numberOfAccumulation']
         self.generateDataCube = self.DEFAULT['generateDataCube'] # if false only overview image is generated
         self.microTimeBin = self.DEFAULT['microTimeBin']
@@ -123,6 +127,30 @@ class BHScannerProcessor(BaseProcessor):
             return 0.0
         return self.accumulationIdx / self.numberOfAccumulation
 
+    def update_pixel_time(self):
+        """Recalculate pixelTime from line_period_ms and active_fraction
+
+        This should be called whenever:
+        - Scanner is connected (to get number of pixels)
+        - line_period_ms is changed
+        - active_fraction is changed
+
+        Formula: pixelTime = (active_fraction × line_period_ms × 1000) / n_pixels
+        where n_pixels = rawImage.shape[1]
+        """
+        if self.rawImage is None or self.scanner is None:
+            # Can't calculate yet - use default
+            self.pixelTime = self.DEFAULT['pixelTime']
+            return
+
+        n_pixels = self.scanner.imageSize[1]  # number of pixels per line
+        # Convert line_period from ms to µs, multiply by active fraction, divide by pixels
+        self.pixelTime = (self.active_fraction * self.line_period_ms * 1000.0) / n_pixels
+
+        if hasattr(self, 'verbose') and self.verbose:
+            print(f"pixelTime updated: {self.pixelTime:.2f} µs")
+            print(f"  (line_period={self.line_period_ms} ms, active_fraction={self.active_fraction:.3f}, n_pixels={n_pixels})")
+
     def setParameter(self,name, value):
         ''' set parameter of the spectral camera'''
         super().setParameter(name,value)
@@ -136,14 +164,28 @@ class BHScannerProcessor(BaseProcessor):
                                       *self.scanner.imageSize), dtype=int)
             self.dataCubeFinished = np.zeros((self.microTimeBin,self.scanner.numberOfChannel,
                                               *self.scanner.imageSize), dtype=int)
+            # Recalculate pixelTime from line_period_ms and active_fraction now that we know n_pixels
+            self.update_pixel_time()
+
+        elif name == 'line_period_ms':
+            self.line_period_ms = value
+            self.update_pixel_time()  # Recalculate pixelTime with new line period
+
+        elif name == 'active_fraction':
+            self.active_fraction = value
+            self.update_pixel_time()  # Recalculate pixelTime with new active fraction
 
     def getParameter(self,name):
         ''' get parameter of the camera '''
         _value = super().getParameter(name)
-        if _value is not None: return _value        
+        if _value is not None: return _value
 
         if name== 'scanner':
             return self.scanner
+        elif name == 'line_period_ms':
+            return self.line_period_ms
+        elif name == 'active_fraction':
+            return self.active_fraction
 
     def processData(self):
         ''' process newly arrived data '''
