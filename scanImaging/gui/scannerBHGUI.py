@@ -45,13 +45,53 @@ class ScannerBHGUI(BaseGUI):
             self.processor.numberOfAccumulation = numberOfAccumulation
             self.processor.generateDataCube = False if continuous else True
 
+        @magicgui(call_button='Restart Scanner')
+        def restartScannerGui():
+            """Manual scanner restart for locked/stalled scanner
 
-        # add widget parameterCameraGui 
+            Use this button when the scanner appears locked:
+            - Photon counts still received but image not progressing
+            - Line triggers still sent but scan stuck at one position
+            - Only detectable by user observation
+            """
+            print("Manual scanner restart initiated...")
+            try:
+                import time
+
+                # Stop acquisition
+                self.device.stopAcquisition()
+                print("  Scanner stopped")
+                time.sleep(0.5)
+
+                # Reset processor state
+                if hasattr(self.processor, 'reset_accumulation'):
+                    self.processor.reset_accumulation()
+                    print("  Processor accumulation reset")
+                else:
+                    self.processor.resetCounter()
+                    print("  Processor counter reset")
+                time.sleep(0.5)
+
+                # Restart acquisition
+                self.device.startAcquisition()
+                print("  Scanner restarted")
+                time.sleep(1.0)
+
+                # Update GUI state
+                self.parameterADetectorGui.acquisition.value = True
+
+                print("Scanner restart complete!")
+            except Exception as e:
+                print(f"ERROR during manual scanner restart: {e}")
+
+        # add widget parameterCameraGui
         self.parameterADetectorGui = parameterADetectorGui
         self.parameter2ADetectorGui = parameter2ADetectorGui
+        self.restartScannerGui = restartScannerGui
 
         self.dw =self.vWindow.addParameterGui(self.parameterADetectorGui,name=self.DEFAULT['nameGUI'])
         self.dw =self.vWindow.addParameterGui(self.parameter2ADetectorGui,name=self.DEFAULT['nameGUI']+'_2')
+        self.dw =self.vWindow.addParameterGui(self.restartScannerGui,name=self.DEFAULT['nameGUI']+'_restart')
 
 
     def setDevice(self,device,processor=None):

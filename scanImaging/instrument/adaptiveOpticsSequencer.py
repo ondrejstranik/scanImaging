@@ -23,12 +23,14 @@ class ScannerImageProvider:
         self.continous_acquisition = False
 
     def startContinuousMode(self):
-        self.continous_acquisition = True
-        self.scanner_device.startAcquisition()
+        if not self.continous_acquisition and self.scanner_device is not None:
+            self.continous_acquisition = True
+            self.scanner_device.startAcquisition()
 
     def stopContinuousMode(self):
-        self.scanner_device.stopAcquisition()
-        self.continous_acquisition = False
+        if self.continous_acquisition and self.scanner_device is not None:
+            self.scanner_device.stopAcquisition()
+            self.continous_acquisition = False
     
     def restartContinuousMode(self):
         self.stopContinuousMode()
@@ -243,6 +245,9 @@ class AdaptiveOpticsSequencer(BaseSequencer):
         self.scanner_max_retries = 5  # number of retry attempts on timeout
         self.scanner_enable_health_check = False  # OFF by default to avoid bleaching
         self.scanner_enable_auto_restart = True  # automatically restart scanner on failure
+
+        # Loop control and cleanup
+        self._stop_requested = False  # Flag to signal loop to exit cleanly
 
         # Optimization metrics
         self.selected_metric='laplacian_variance'
@@ -512,17 +517,40 @@ class AdaptiveOpticsSequencer(BaseSequencer):
 
 
     def start(self):
+        """Start the AO sequencer loop"""
         try:
+            # Reset stop flag before starting
+            self._stop_requested = False
             self.setParameter('threadingNow', True)
         except Exception:
             pass
 
     def stop(self):
+        """Stop the AO sequencer and ensure cleanup happens immediately"""
+        if self.verbose:
+            print("Stop requested - cleaning up...")
+
         try:
+            # Set flag to signal loop to exit (checked at each yield)
+            self._stop_requested = True
+            # Immediately stop continuous scan mode (don't wait for finally block)
+            if self.continuous_scan and self.image_provider is not None:
+                try:
+                    
+                    if self.verbose:
+                        print("Stopping continuous acquisition mode...")
+                    self.image_provider.stopContinuousMode()
+                except Exception as e:
+                    if self.verbose:
+                        print(f"Error stopping continuous mode: {e}")
+
+            # Quit the worker thread
             if getattr(self, 'worker', None) is not None:
                 self.worker.quit()
-        except Exception:
-            pass
+
+        except Exception as e:
+            if self.verbose:
+                print(f"Error during stop: {e}")
 
     def _initialize_coefficients(self):
         """Initialize Zernike coefficients from current DM state or specified initial values
@@ -641,6 +669,10 @@ class AdaptiveOpticsSequencer(BaseSequencer):
                         image_stack.append(self._updateImageAndDM(current_coefficients=current_coefficients,zernike_index=zernike_index,val=val))
                         parameter_stack.append(val)
                         yield  # yield to allow interruption
+                        if self._stop_requested:
+                            if self.verbose:
+                                print("Stop requested - exiting AO loop")
+                            return  # Exit early, finally block will still execute
                     miss_max=1
                     while num_scan_points<100 and abs(miss_max)!=0:
                         # compute optimal parameter for this mode
@@ -671,6 +703,10 @@ class AdaptiveOpticsSequencer(BaseSequencer):
                             image=self._updateImageAndDM(current_coefficients=current_coefficients,zernike_index=zernike_index,val=added_value)
                             image_stack=[image]+image_stack if miss_max<0 else image_stack+[image]
                             yield  # yield to allow interruption
+                            if self._stop_requested:
+                                if self.verbose:
+                                    print("Stop requested - exiting AO loop")
+                                return  # Exit early, finally block will still execute
 
                     initial_coefficients_full[zernike_index] = optimal_value
                     current_coefficients[zernike_index] = optimal_value
