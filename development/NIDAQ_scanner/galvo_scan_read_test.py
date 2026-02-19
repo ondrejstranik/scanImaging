@@ -330,10 +330,10 @@ specs_unidirectional={"rate":200000,
     "bidirectional":False}
 
 specs_bidirectional={
-    "rate":200000,
+    "rate":100000,
     "fov_voltage":1.5,
-    "pixels_x":200,# we need at least ~8 samples per pixel. 
-    "pixels_y":200,# 512
+    "pixels_x":100,# we need at least ~8 samples per pixel. 
+    "pixels_y":100,# 512
     "line_rate":300,#250
     "flyback_frac":0.1,
     "flyback_frame_frac":20/512, #1.5/512
