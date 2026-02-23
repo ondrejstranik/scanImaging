@@ -150,6 +150,86 @@ class VirtualISMGui(BaseGUI):
         layout2.addWidget(self.probe_widget.native)
         tab2.setLayout(layout2)
 
+        # -------------------------
+        # DEEP TISSUE SIMULATION TAB
+        # -------------------------
+        @magicgui(call_button='Apply Deep Tissue Aberrations', layout='vertical')
+        def deep_tissue_widget(
+            depth_um: float = 0.0,
+            n_immersion: float = 1.518,
+            n_sample: float = 1.33,
+        ):
+            """
+            Calculate and apply Gibson-Lanni aberrations for deep tissue imaging.
+
+            Parameters:
+            - depth_um: Imaging depth in micrometers
+            - n_immersion: Refractive index of immersion medium (1.518 for oil)
+            - n_sample: Refractive index of sample (1.33 for tissue)
+
+            Uses NA and wavelength from current ISM parameters.
+            """
+            if self.device is None:
+                print("No VirtualISM device set")
+                return
+
+            # Get NA from device parameters
+            na_value = self.device.getParameter('NA')
+
+            # Calculate refractive index mismatch
+            delta_n = n_immersion - n_sample
+
+            # Convert depth from micrometers to nanometers
+            depth_nm = depth_um * 1000.0
+
+            # Gibson-Lanni model for spherical aberrations
+            # These formulas are approximations based on the theory
+
+            # Primary spherical aberration Z11 (dominant)
+            # Proportional to depth × NA^4 × Δn
+            z11_coeff = -depth_nm * (na_value**4) * delta_n / (8.0 * n_immersion)
+
+            # Secondary spherical aberration Z22
+            # Proportional to depth × NA^6 × Δn (higher order, smaller)
+            z22_coeff = -depth_nm * (na_value**6) * delta_n / (32.0 * n_immersion)
+
+            # Defocus Z4 (can be corrected by objective adjustment)
+            # Proportional to depth × NA^2 × Δn
+            z4_coeff = -depth_nm * (na_value**2) * delta_n / (4.0 * n_immersion)
+
+            # Build Zernike coefficient array (up to Z22 = index 21)
+            # Zernike indices: 0=piston, 1,2=tip/tilt, 3=oblique astig, 4=defocus, 5=vertical astig,
+            # 6,7,8=coma/trefoil, 9,10=higher, 11=primary spherical, ..., 22=secondary spherical
+            coeffs = np.zeros(23)  # indices 0-22
+            coeffs[4] = z4_coeff    # Defocus
+            coeffs[11] = z11_coeff  # Primary spherical
+            coeffs[22] = z22_coeff  # Secondary spherical
+
+            # Convert to list and update the system aberrations
+            coeffs_list = coeffs.tolist()
+
+            try:
+                self.device.setParameter('systemAberrations', coeffs_list)
+                self.device.updateImage()
+
+                # Update the ISM parameters tab to show the applied aberrations
+                aberr_str = ', '.join([f'{c:.1f}' for c in coeffs_list[:12]])  # Show first 12
+                if len(coeffs_list) > 12:
+                    aberr_str += ', ...'
+                self.parameter_widget.system_aberrations.value = aberr_str
+
+                print(f"Deep tissue aberrations applied:")
+                print(f"  Depth: {depth_um:.1f} μm")
+                print(f"  Δn = {delta_n:.3f} (n_immersion={n_immersion:.3f}, n_sample={n_sample:.3f})")
+                print(f"  Z4 (defocus): {z4_coeff:.1f} nm")
+                print(f"  Z11 (spherical): {z11_coeff:.1f} nm")
+                print(f"  Z22 (secondary spherical): {z22_coeff:.1f} nm")
+            except Exception as e:
+                print(f"Error applying deep tissue aberrations: {e}")
+
+        # Store reference
+        self.deep_tissue_widget = deep_tissue_widget
+
         # State Save/Load tab
         tab3 = QWidget()
         layout3 = QVBoxLayout()
@@ -256,9 +336,16 @@ class VirtualISMGui(BaseGUI):
         layout3.addStretch()  # Push buttons to top
         tab3.setLayout(layout3)
 
+        # Deep Tissue tab
+        tab4 = QWidget()
+        layout4 = QVBoxLayout()
+        layout4.addWidget(self.deep_tissue_widget.native)
+        tab4.setLayout(layout4)
+
         tab_widget.addTab(tab1, "ISM Parameters")
         tab_widget.addTab(tab2, "Probe Parameters")
         tab_widget.addTab(tab3, "State Save/Load")
+        tab_widget.addTab(tab4, "Deep Tissue")
 
         self.dw = self.vWindow.addParameterGui(tab_widget, name=self.DEFAULT['nameGUI'])
 

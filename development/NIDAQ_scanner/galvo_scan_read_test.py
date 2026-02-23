@@ -217,6 +217,12 @@ class FakeAiWrapper:
         self.nLines=len(scan_layout["line_samples"])
         self.sample_size=scan_layout["pattern_size"]
         self.rate=scan_layout["rate"]
+
+        # Store timing compensation parameters for lag simulation
+        self.scanner_lag = scan_layout.get("scanner_lag_samples", 0)
+        self.scanner_lag_even = scan_layout.get("scanner_lag_samples_even", 0)+10
+        self.scanner_lag_odd = scan_layout.get("scanner_lag_samples_odd", 0)
+
         self._set_image()
 
     def _set_image(self):
@@ -232,10 +238,41 @@ class FakeAiWrapper:
 #        arr*=0.0
 #        arr[:,len(arr)//2-10:len(arr)//2+10]=1.0
         self.image=arr
+
+        # Apply bidirectional reversal
         if self.bidirectional:
             for n in range(arr.shape[0]):
                 if n%2==1:
                     arr[n,:]=arr[n,::-1]
+
+        # Simulate scanner lag by shifting data forward (to the right)
+        # This simulates the scanner position lagging behind the voltage command
+        if self.scanner_lag != 0 or self.scanner_lag_even != 0 or self.scanner_lag_odd != 0:
+            arr_lagged = np.zeros_like(arr)
+            for n in range(arr.shape[0]):
+                # Calculate total lag for this line
+                line_lag = self.scanner_lag
+                if n % 2 == 0:  # even line
+                    line_lag += self.scanner_lag_even
+                else:  # odd line
+                    line_lag += self.scanner_lag_odd
+
+                # Apply lag by shifting data forward (right)
+                if line_lag > 0:
+                    # Shift right: data appears later than it should
+                    arr_lagged[n, line_lag:] = arr[n, :-line_lag]
+                    arr_lagged[n, :line_lag] = 0  # Fill beginning with zeros
+                elif line_lag < 0:
+                    # Shift left: data appears earlier than it should
+                    arr_lagged[n, :line_lag] = arr[n, -line_lag:]
+                    arr_lagged[n, line_lag:] = 0  # Fill end with zeros
+                else:
+                    # No lag
+                    arr_lagged[n, :] = arr[n, :]
+            arr = arr_lagged
+            print(f"FakeAiWrapper: Simulating scanner lag (global={self.scanner_lag}, even={self.scanner_lag_even}, odd={self.scanner_lag_odd})")
+
+        # Pad with flyback samples
         arr=np.pad(arr,((0,0),(0,self.line_flyback)),mode='constant')
         print(arr.shape)
         if arr.shape[1]!=self.complete_line_size:
@@ -327,7 +364,11 @@ specs_unidirectional={"rate":200000,
     "line_rate":250,  # 100 lines per second
     "flyback_frac":0.7,
     "flyback_frame_frac":1.0/512,
-    "bidirectional":False}
+    "bidirectional":False,
+    # Timing compensation parameters (all default to 0)
+    "scanner_lag_samples":0,           # Global lag: samples to skip at start of each line
+    "scanner_lag_samples_even":0,      # Additional offset for even lines (0, 2, 4, ...)
+    "scanner_lag_samples_odd":0}       # Additional offset for odd lines (1, 3, 5, ...)
 
 specs_bidirectional={
     "rate":100000,
@@ -337,12 +378,27 @@ specs_bidirectional={
     "line_rate":300,#250
     "flyback_frac":0.1,
     "flyback_frame_frac":20/512, #1.5/512
-    "bidirectional":True}
+    "bidirectional":True,
+    # Timing compensation parameters (all default to 0)
+    "scanner_lag_samples":0,           # Global lag: samples to skip at start of each line
+    "scanner_lag_samples_even":0,      # Additional offset for even lines (0, 2, 4, ...)
+    "scanner_lag_samples_odd":0}       # Additional offset for odd lines (1, 3, 5, ...)
 
 def setup_and_check_pattern(pattern_specs=specs_bidirectional):
     rate=int(pattern_specs["rate"])
     samples_per_line = round(rate / pattern_specs["line_rate"])
     ny=pattern_specs["pixels_y"]
+
+    # Extract timing compensation parameters
+    scanner_lag = pattern_specs.get("scanner_lag_samples", 0)
+    scanner_lag_even = pattern_specs.get("scanner_lag_samples_even", 0)
+    scanner_lag_odd = pattern_specs.get("scanner_lag_samples_odd", 0)
+
+    # Validation: warn if offsets are large
+    max_offset = scanner_lag + max(abs(scanner_lag_even), abs(scanner_lag_odd))
+    if max_offset >= 50:  # Arbitrary threshold
+        print(f"WARNING: Large timing offset ({max_offset} samples = {max_offset/rate*1e6:.1f} µs)")
+
     # Note: pixel_gate is high during active pixel period, line_trig is high at start of each line, frame_trig is high at start of first line of each frame
     t,x,y, pixel_gate, line_trig, frame_trig = safe_scan_pattern(
         fs=rate,
@@ -410,7 +466,11 @@ def setup_and_check_pattern(pattern_specs=specs_bidirectional):
     "max_line_read_samples": max_line_read_samples,
     "pattern_size": len(pixel_gate),
     "pixel_gate": pixel_gate,
-    "rate": rate
+    "rate": rate,
+    # Timing compensation parameters for detector_thread
+    "scanner_lag_samples": scanner_lag,
+    "scanner_lag_samples_even": scanner_lag_even,
+    "scanner_lag_samples_odd": scanner_lag_odd
     }
 
     if np.sum(complete_line_samples)!=len(pixel_gate):
@@ -465,8 +525,32 @@ def detector_thread(ai_task,scan_layout,stop_event,image_queue, pattern_specs=sp
         if blocking * nx > line_samples:
             raise RuntimeError("Blocking exceeds available samples")
         data = np.asarray(data, dtype=np.float32)
-        # 1) extract the relevant data.
-        line=data[:line_samples]
+        # 1) extract the relevant data with timing compensation
+        # Calculate total offset for this specific line
+        line_offset = scan_layout["scanner_lag_samples"]
+        if line_idx % 2 == 0:  # even line
+            line_offset += scan_layout["scanner_lag_samples_even"]
+        else:  # odd line
+            line_offset += scan_layout["scanner_lag_samples_odd"]
+
+        # Clamp offset to valid range
+        line_offset = max(0, line_offset)
+
+        # Extract line data starting from offset
+        if line_offset > 0:
+            # Skip initial samples that correspond to scanner lag
+            line_end = min(line_samples, samples_per_read)
+            line = data[line_offset:line_end]
+
+            # If extraction resulted in too few samples, pad with NaN
+            if len(line) < line_samples - line_offset:
+                padded = np.full(line_samples - line_offset, np.nan, dtype=np.float32)
+                padded[:len(line)] = line
+                line = padded
+        else:
+            # No offset, use original logic
+            line = data[:line_samples]
+
         # This is irrelevant in most cases (just for safety)
         if len(line) < max_line_samples:
             padded = np.full(max_line_samples, np.nan, dtype=np.float32)
@@ -476,8 +560,16 @@ def detector_thread(ai_task,scan_layout,stop_event,image_queue, pattern_specs=sp
         if bidirectional and (line_idx % 2 == 1):
             line = line[::-1]
         # 3) blocking, This needs to be the last step!
+        # Safety check: ensure we have enough samples for blocking
+        required_samples = nx * blocking
+        if len(line) < required_samples:
+            # Pad with NaN if we don't have enough samples
+            padded = np.full(required_samples, np.nan, dtype=np.float32)
+            padded[:len(line)] = line
+            line = padded
+
         line = np.nanmean(
-            line[:nx * blocking].reshape(nx, blocking),
+            line[:required_samples].reshape(nx, blocking),
             axis=1
         )
         frame[line_idx,:] = line
@@ -577,7 +669,7 @@ def run():
     image_queue = queue.Queue(maxsize=3)
     display=Display()
     display.initialize_display(specs_bidirectional)
-    tasksfactory=NIDaqTaskFactory()
+    tasksfactory=FakeNIDaqTaskFactory()
     tasksfactory.set_rate(rate)
     ao_task=tasksfactory.create_ao_wrapper(total_scan_samples)
     do_task=tasksfactory.create_do_wrapper(total_scan_samples)
