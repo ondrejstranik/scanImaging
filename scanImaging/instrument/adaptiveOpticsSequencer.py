@@ -3,6 +3,9 @@ from pathlib import Path
 import numpy as np
 import time
 
+# Import optimizer module
+from .ao_optimizers import SequentialOptimizer
+
 
 class ScannerImageProvider:
     ''' class for providing images from the scanner'''
@@ -206,9 +209,9 @@ class ScannerImageProvider:
             raise last_exception
         return None
 
-class AdaptiveOpticsSequencer(BaseSequencer):
+class AdaptiveOpticsController(BaseSequencer):
     """
-    Adaptive Optics optimization sequencer with multiple algorithm support.
+    Adaptive Optics controller - coordinates hardware, processing, and optimization.
 
     UPDATE FLOW ARCHITECTURE - TWO MODES OF OPERATION:
     --------------------------------------------------
@@ -262,18 +265,23 @@ class AdaptiveOpticsSequencer(BaseSequencer):
     - Transition: use_current_dm_state enables smooth handoff between modes
     """
 
-    DEFAULT = {'name': 'AdaptiveOpticsSequencer'}
+    DEFAULT = {'name': 'AdaptiveOpticsController'}
 
     def __init__(self,viscope=None, name=None, **kwargs):
         ''' initialisation '''
 
-        if name== None: name= AdaptiveOpticsSequencer.DEFAULT['name']
+        if name== None: name= AdaptiveOpticsController.DEFAULT['name']
         super().__init__(name=name, **kwargs)
         self.viscope=viscope
         # devices
         self.deformable_mirror = None
         self.image_provider = None
         self.dm_display = None
+
+        # NEW: Optional image processing and z-scanning support
+        self.image_processor = kwargs.get('image_processor', None)  # ISM/FLIM processing pipeline
+        self.z_stage = kwargs.get('z_stage', None)                  # z-stage for volume imaging
+        self.current_z = None                                        # current z-position
         self.recorded_image_folder= "Data/AdaptiveOptics"
         self.optim_iterations=3
         self.optim_iterations_per_mode=[]  # Per-mode iterations (empty = use optim_iterations for all)
@@ -812,7 +820,7 @@ class AdaptiveOpticsSequencer(BaseSequencer):
                 self.deformable_mirror.set_phase_map_from_zernike(coeffs_plus)
                 self.deformable_mirror.display_surface()
                 time.sleep(0.05)  # Shorter settling for SPGD
-                img_plus = self.image_provider.getImage()
+                img_plus = self.acquire_and_process_image()
                 metric_plus = metric_fn(img_plus)
 
                 yield  # Allow interruption
@@ -827,7 +835,7 @@ class AdaptiveOpticsSequencer(BaseSequencer):
                 self.deformable_mirror.set_phase_map_from_zernike(coeffs_minus)
                 self.deformable_mirror.display_surface()
                 time.sleep(0.05)
-                img_minus = self.image_provider.getImage()
+                img_minus = self.acquire_and_process_image()
                 metric_minus = metric_fn(img_minus)
 
                 yield  # Allow interruption
@@ -927,7 +935,7 @@ class AdaptiveOpticsSequencer(BaseSequencer):
         self.deformable_mirror.set_phase_map_from_zernike(best_coeffs)
         self.deformable_mirror.display_surface()
         time.sleep(0.05)
-        img_initial = self.image_provider.getImage()
+        img_initial = self.acquire_and_process_image()
         best_metric = metric_fn(img_initial)
 
         if self.verbose:
@@ -959,7 +967,7 @@ class AdaptiveOpticsSequencer(BaseSequencer):
                 self.deformable_mirror.set_phase_map_from_zernike(random_coeffs)
                 self.deformable_mirror.display_surface()
                 time.sleep(0.05)
-                img = self.image_provider.getImage()
+                img = self.acquire_and_process_image()
                 metric_value = metric_fn(img)
 
                 # Update best if improved
@@ -1099,6 +1107,52 @@ class AdaptiveOpticsSequencer(BaseSequencer):
             initial_coefficients_full[zernike_index] = self.zernike_initial_coefficients_nm[idx]
         return initial_coefficients_full
 
+    def acquire_and_process_image(self):
+        """
+        Acquire image with optional processing pipeline.
+
+        If image_processor is provided (ISM, FLIM, etc.), applies processing
+        and returns processed image. Otherwise returns raw image.
+
+        Returns:
+            numpy.ndarray: Image for AO metric computation
+        """
+        # Acquire raw data
+        raw_data = self.image_provider.getImage()
+
+        # Apply processing if available
+        if self.image_processor is not None:
+            try:
+                processed = self.image_processor.process(raw_data)
+
+                # Update display with additional data (ISM, FLIM layers)
+                if hasattr(self, '_update_multimodal_display'):
+                    self._update_multimodal_display(processed)
+
+                # Return processed image for metric computation
+                return processed.get('image', raw_data)
+
+            except Exception as e:
+                if self.verbose:
+                    print(f"Warning: Image processing failed: {e}")
+                    print("Falling back to raw image")
+                return raw_data
+        else:
+            # No processing: return raw image
+            return raw_data
+
+    def _update_multimodal_display(self, processed_data):
+        """
+        Update display with multi-modal data (ISM, FLIM).
+
+        Override this method or implement in GUI integration for full functionality.
+
+        Args:
+            processed_data: Dict with keys like 'image', 'ism_enhanced', 'lifetime', etc.
+        """
+        # Placeholder - implement when ISM/FLIM modules added
+        pass
+
     def _updateImageAndDM(self, current_coefficients, zernike_index, val):
         """
         Update DM, notify, wait, and acquire image.
@@ -1111,9 +1165,9 @@ class AdaptiveOpticsSequencer(BaseSequencer):
                                     zernike_index=zernike_index,
                                     scan_value=val)
 
-        # Wait for stabilization and acquire image
+        # Wait for stabilization and acquire image with optional processing
         time.sleep(0.1)
-        return self.image_provider.getImage()
+        return self.acquire_and_process_image()
 
     def _build_iterations_dict(self):
         """Build dictionary mapping Zernike mode → number of iterations
@@ -1145,15 +1199,50 @@ class AdaptiveOpticsSequencer(BaseSequencer):
         # Build dictionary
         return {mode: int(iters) for mode, iters in zip(modes, iterations_vector)}
 
+    def loop_scan_based_modular(self):
+        """
+        Sequential scan-based optimization using modular optimizer architecture.
+
+        This is the new implementation that delegates to SequentialOptimizer.
+        """
+        if self.verbose:
+            print("Starting Adaptive Optics Sequencer Loop (Modular Optimizer)")
+            print(f"Optimizing indices: {self.initial_zernike_indices} with initial coefficients (nm): {self.zernike_initial_coefficients_nm} and scan amplitudes (nm): {self.zernike_amplitude_scan_nm}")
+            print(f"Using metric: {self.selected_metric}")
+
+        # Initialize coefficients
+        initial_coefficients_full = self._initialize_coefficients()
+
+        # Create and initialize optimizer
+        optimizer = SequentialOptimizer(self)
+        optimizer.initialize(
+            initial_coefficients=initial_coefficients_full,
+            zernike_indices=self.initial_zernike_indices,
+            scan_amplitudes=self.zernike_amplitude_scan_nm
+        )
+
+        # Run optimization (yields for GUI updates)
+        yield from optimizer.run()
+
+        # Store final results
+        results = optimizer.get_results()
+        self.final_coefficients = results['final_coefficients']
+
+        if self.verbose:
+            print(f"Optimization complete. Final coefficients: {self.final_coefficients[:min(12, len(self.final_coefficients))]}")
+
     def loop_scan_based(self):
         """
         Sequential scan-based optimization (simple_interpolation or weighted_fit).
 
-        Algorithm selected by self.optim_method. Both algorithms use the same scan
-        pattern and differ only in the optimization function:
-        - simple_interpolation: Uses only current scan data (3 points)
-        - weighted_fit: Accumulates all scan points across iterations with Poisson weighting
+        Delegates to modular optimizer implementation (SequentialOptimizer).
+        The legacy implementation is preserved in loop_scan_based_legacy() for reference.
         """
+        # Use modular implementation
+        yield from self.loop_scan_based_modular()
+        return
+
+        # LEGACY IMPLEMENTATION BELOW (unreachable, kept for reference)
         if self.verbose:
             print("Starting Adaptive Optics Sequencer Loop")
             print(f"Optimizing indices: {self.initial_zernike_indices} with initial coefficients (nm): {self.zernike_initial_coefficients_nm} and scan amplitudes (nm): {self.zernike_amplitude_scan_nm}")
@@ -1302,7 +1391,7 @@ class AdaptiveOpticsSequencer(BaseSequencer):
                             break  # Exit inner loop (iterations for this mode)
 
                 # After completing all iterations for this mode, get final image
-                image = self.image_provider.getImage()
+                image = self.acquire_and_process_image()
                 imageSet.append(image)
                 parameter_set.append(initial_coefficients_full.copy())
                 opt_v_set.append(opt_v)
@@ -1354,6 +1443,10 @@ class AdaptiveOpticsSequencer(BaseSequencer):
             yield from self.loop_scan_based()
         else:
             raise ValueError(f"Unknown optimization method: {self.optim_method}")
+
+
+# Backward compatibility alias
+AdaptiveOpticsSequencer = AdaptiveOpticsController
 
 
 if __name__ == "__main__":
