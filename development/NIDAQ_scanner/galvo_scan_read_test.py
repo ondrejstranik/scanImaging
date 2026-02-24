@@ -220,7 +220,7 @@ class FakeAiWrapper:
 
         # Store timing compensation parameters for lag simulation
         self.scanner_lag = scan_layout.get("scanner_lag_samples", 0)
-        self.scanner_lag_even = scan_layout.get("scanner_lag_samples_even", 0)+10
+        self.scanner_lag_even = scan_layout.get("scanner_lag_samples_even", 0)
         self.scanner_lag_odd = scan_layout.get("scanner_lag_samples_odd", 0)
 
         self._set_image()
@@ -371,10 +371,10 @@ specs_unidirectional={"rate":200000,
     "scanner_lag_samples_odd":0}       # Additional offset for odd lines (1, 3, 5, ...)
 
 specs_bidirectional={
-    "rate":100000,
+    "rate":200000,
     "fov_voltage":1.5,
-    "pixels_x":100,# we need at least ~8 samples per pixel. 
-    "pixels_y":100,# 512
+    "pixels_x":200,# we need at least ~8 samples per pixel. 
+    "pixels_y":200,# 512
     "line_rate":300,#250
     "flyback_frac":0.1,
     "flyback_frame_frac":20/512, #1.5/512
@@ -539,12 +539,13 @@ def detector_thread(ai_task,scan_layout,stop_event,image_queue, pattern_specs=sp
         # Extract line data starting from offset
         if line_offset > 0:
             # Skip initial samples that correspond to scanner lag
-            line_end = min(line_samples, samples_per_read)
+            # Need to read line_offset more samples to compensate for skipped ones
+            line_end = min(line_samples + line_offset, samples_per_read)
             line = data[line_offset:line_end]
 
             # If extraction resulted in too few samples, pad with NaN
-            if len(line) < line_samples - line_offset:
-                padded = np.full(line_samples - line_offset, np.nan, dtype=np.float32)
+            if len(line) < line_samples:
+                padded = np.full(line_samples, np.nan, dtype=np.float32)
                 padded[:len(line)] = line
                 line = padded
         else:
