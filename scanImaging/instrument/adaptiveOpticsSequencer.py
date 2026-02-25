@@ -4,7 +4,7 @@ import numpy as np
 import time
 
 # Import optimizer module
-from .ao_optimizers import SequentialOptimizer
+from .ao_optimizers import SequentialOptimizer, SPGDOptimizer, RandomSearchOptimizer
 
 
 class ScannerImageProvider:
@@ -763,253 +763,47 @@ class AdaptiveOpticsController(BaseSequencer):
         """
         SPGD (Stochastic Parallel Gradient Descent) optimization loop.
 
-        Optimizes ALL Zernike modes simultaneously using stochastic perturbations.
-        Very robust to Poisson noise and mode coupling.
-
-        Algorithm:
-        1. Apply random perturbation +δ to all coefficients
-        2. Measure metric J+
-        3. Apply perturbation -δ
-        4. Measure metric J-
-        5. Estimate gradient: ∇J ≈ (J+ - J-) / (2δ) × δ
-        6. Update coefficients: c += gain × ∇J
+        Delegates to modular SPGDOptimizer implementation.
         """
-        from scipy.ndimage import laplace
-        import time
-        import numpy as np
-        from pathlib import Path
-
-        if self.verbose:
-            print("\n" + "="*60)
-            print("Starting SPGD optimization")
-            print("="*60)
-            print(f"Gain: {self.spgd_gain}")
-            print(f"Delta: {self.spgd_delta} nm")
-            print(f"Iterations: {self.spgd_iterations}")
-            print(f"Modes: {self.initial_zernike_indices}")
-            print(f"Using metric: {self.selected_metric}")
-
         # Initialize coefficients
         initial_coefficients_full = self._initialize_coefficients()
-        coeffs = initial_coefficients_full.copy()
 
-        # Metric function
-        metric_fn = self.get_metric_function()
+        # Create and initialize optimizer
+        optimizer = SPGDOptimizer(self)
+        optimizer.initialize(
+            initial_coefficients=initial_coefficients_full,
+            zernike_indices=self.initial_zernike_indices
+        )
 
-        # History tracking
-        metric_history = []
-        coeff_history = []
+        # Run optimization (yields for GUI updates)
+        yield from optimizer.run()
 
-        try:
-            if self.continuous_scan:
-                self.image_provider.startContinuousMode()
-
-            for iteration in range(self.spgd_iterations):
-                if self._stop_requested:
-                    if self.verbose:
-                        print("Stop requested - exiting SPGD loop")
-                    return
-
-                # Generate random perturbation for optimized modes only
-                perturbation = np.zeros_like(coeffs)
-                for zernike_index in self.initial_zernike_indices:
-                    perturbation[zernike_index] = np.random.randn() * self.spgd_delta
-
-                # Measure metric with positive perturbation
-                coeffs_plus = coeffs + perturbation
-                self.deformable_mirror.set_phase_map_from_zernike(coeffs_plus)
-                self.deformable_mirror.display_surface()
-                time.sleep(0.05)  # Shorter settling for SPGD
-                img_plus = self.acquire_and_process_image()
-                metric_plus = metric_fn(img_plus)
-
-                yield  # Allow interruption
-
-                if self._stop_requested:
-                    if self.verbose:
-                        print("Stop requested - exiting SPGD loop")
-                    return
-
-                # Measure metric with negative perturbation
-                coeffs_minus = coeffs - perturbation
-                self.deformable_mirror.set_phase_map_from_zernike(coeffs_minus)
-                self.deformable_mirror.display_surface()
-                time.sleep(0.05)
-                img_minus = self.acquire_and_process_image()
-                metric_minus = metric_fn(img_minus)
-
-                yield  # Allow interruption
-
-                # Estimate gradient and update coefficients
-                gradient_estimate = (metric_plus - metric_minus) / (2 * self.spgd_delta)
-                coeffs += self.spgd_gain * gradient_estimate * perturbation
-
-                # Track metrics
-                avg_metric = (metric_plus + metric_minus) / 2
-                metric_history.append(avg_metric)
-                coeff_history.append(coeffs.copy())
-
-                # Apply updated coefficients and notify (standard pattern)
-                self._update_dm_and_notify(coeffs,
-                                            iteration=iteration,
-                                            metric=avg_metric,
-                                            spgd_metric_history=metric_history.copy())
-
-                # Print progress every 5 iterations to avoid console spam
-                if self.verbose and (iteration % 5 == 0 or iteration == self.spgd_iterations - 1):
-                    print(f"SPGD iter {iteration+1}/{self.spgd_iterations}: metric={avg_metric:.4f}")
-                    print(f"  Coeffs: {coeffs[self.initial_zernike_indices]}")
-
-                # Convergence check
-                if self.enable_convergence_detection and len(metric_history) >= self.convergence_window + 1:
-                    recent_metrics = metric_history[-self.convergence_window-1:]
-                    relative_improvement = (recent_metrics[-1] - recent_metrics[0]) / (abs(recent_metrics[0]) + 1e-12)
-
-                    if relative_improvement < self.convergence_threshold:
-                        if self.verbose:
-                            print(f"SPGD converged after {iteration+1} iterations!")
-                            print(f"Improvement {relative_improvement:.4f} < threshold {self.convergence_threshold:.4f}")
-                        break
-
-            # Save final coefficients
-            self.final_coefficients = coeffs.copy()
-            if self.verbose:
-                print(f"\nSPGD optimization complete!")
-                print(f"Final coefficients: {coeffs[:min(12, len(coeffs))]}")
-                print(f"Final metric: {metric_history[-1]:.4f}")
-
-            # Final notification (with complete metric history for final plot)
-            try:
-                self._notify_dependents(params={
-                    'current_coefficients': coeffs.copy(),  # For DM surface update
-                    'final_coefficients': coeffs.copy(),  # For backwards compatibility
-                    'spgd_metric_history': metric_history.copy(),
-                    'iteration': len(metric_history) - 1
-                })
-            except Exception:
-                pass
-
-        finally:
-            if self.continuous_scan:
-                if self.verbose:
-                    print("Stopping continuous acquisition mode...")
-                self.image_provider.stopContinuousMode()
+        # Store final results
+        results = optimizer.get_results()
+        self.final_coefficients = results['final_coefficients']
 
     def loop_random_search(self):
         """
         Random search baseline optimization.
 
-        Simple baseline algorithm that randomly samples the coefficient space.
-        Useful for comparison with more sophisticated methods.
-
-        Algorithm:
-        1. Generate random coefficients within search range
-        2. Measure metric
-        3. Keep best coefficients found
-        4. Repeat for specified iterations
-
-        Very robust (no local minima issues) but inefficient compared to
-        gradient-based methods. Serves as a baseline to validate that other
-        algorithms actually improve performance.
+        Delegates to modular RandomSearchOptimizer implementation.
         """
-        import time
-        import numpy as np
-
-        if self.verbose:
-            print("\n" + "="*60)
-            print("Starting Random Search optimization")
-            print("="*60)
-            print(f"Iterations: {self.random_search_iterations}")
-            print(f"Search range: ±{self.random_search_range} nm")
-            print(f"Modes: {self.initial_zernike_indices}")
-            print(f"Using metric: {self.selected_metric}")
-
         # Initialize coefficients
         initial_coefficients_full = self._initialize_coefficients()
-        best_coeffs = initial_coefficients_full.copy()
 
-        # Metric function
-        metric_fn = self.get_metric_function()
+        # Create and initialize optimizer
+        optimizer = RandomSearchOptimizer(self)
+        optimizer.initialize(
+            initial_coefficients=initial_coefficients_full,
+            zernike_indices=self.initial_zernike_indices
+        )
 
-        # Measure initial metric
-        self.deformable_mirror.set_phase_map_from_zernike(best_coeffs)
-        self.deformable_mirror.display_surface()
-        time.sleep(0.05)
-        img_initial = self.acquire_and_process_image()
-        best_metric = metric_fn(img_initial)
+        # Run optimization (yields for GUI updates)
+        yield from optimizer.run()
 
-        if self.verbose:
-            print(f"Initial metric: {best_metric:.4f}")
-            print(f"Initial coefficients: {best_coeffs[self.initial_zernike_indices]}")
-
-        # History tracking
-        metric_history = [best_metric]
-
-        try:
-            if self.continuous_scan:
-                self.image_provider.startContinuousMode()
-
-            for iteration in range(self.random_search_iterations):
-                if self._stop_requested:
-                    if self.verbose:
-                        print("Stop requested - exiting random search")
-                    return
-
-                # Generate random coefficients within search range
-                random_coeffs = best_coeffs.copy()
-                for zernike_index in self.initial_zernike_indices:
-                    # Random offset from initial value
-                    offset = np.random.uniform(-self.random_search_range,
-                                               self.random_search_range)
-                    random_coeffs[zernike_index] = initial_coefficients_full[zernike_index] + offset
-
-                # Measure metric at random point
-                self.deformable_mirror.set_phase_map_from_zernike(random_coeffs)
-                self.deformable_mirror.display_surface()
-                time.sleep(0.05)
-                img = self.acquire_and_process_image()
-                metric_value = metric_fn(img)
-
-                # Update best if improved
-                if metric_value > best_metric:
-                    best_metric = metric_value
-                    best_coeffs = random_coeffs.copy()
-                    if self.verbose:
-                        print(f"Iteration {iteration+1}/{self.random_search_iterations}: "
-                              f"New best metric = {best_metric:.4f}")
-                        print(f"  Best coefficients: {best_coeffs[self.initial_zernike_indices]}")
-
-                metric_history.append(best_metric)
-
-                # Apply best coefficients to DM and notify (standard pattern)
-                # This ensures DM state matches what we're reporting to GUI
-                self._update_dm_and_notify(best_coeffs,
-                                            iteration=iteration,
-                                            metric=best_metric,
-                                            random_search_metric_history=metric_history.copy())
-
-                yield  # Allow interruption
-
-            # Save final coefficients
-            self.final_coefficients = best_coeffs.copy()
-
-            if self.verbose:
-                print(f"\nRandom search optimization complete!")
-                print(f"Best metric: {best_metric:.4f}")
-                print(f"Best coefficients: {best_coeffs[:min(12, len(best_coeffs))]}")
-                print(f"Improvement: {((best_metric - metric_history[0]) / metric_history[0] * 100):.1f}%")
-
-            # Final notification with complete history
-            self._update_dm_and_notify(best_coeffs,
-                                        final_coefficients=best_coeffs.copy(),
-                                        random_search_metric_history=metric_history.copy(),
-                                        iteration=len(metric_history) - 1)
-
-        finally:
-            if self.continuous_scan:
-                if self.verbose:
-                    print("Stopping continuous acquisition mode...")
-                self.image_provider.stopContinuousMode()
+        # Store final results
+        results = optimizer.get_results()
+        self.final_coefficients = results['final_coefficients']
 
 
     def start(self):

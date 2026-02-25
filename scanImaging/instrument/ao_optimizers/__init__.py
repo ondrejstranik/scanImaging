@@ -7,5 +7,7 @@ Each optimizer implements a specific algorithm (sequential hill climbing, SPGD, 
 
 from .base_optimizer import BaseOptimizer
 from .sequential_optimizer import SequentialOptimizer
+from .spgd_optimizer import SPGDOptimizer
+from .random_search_optimizer import RandomSearchOptimizer
 
-__all__ = ['BaseOptimizer', 'SequentialOptimizer']
+__all__ = ['BaseOptimizer', 'SequentialOptimizer', 'SPGDOptimizer', 'RandomSearchOptimizer']
