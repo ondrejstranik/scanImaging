@@ -5,6 +5,7 @@ import time
 
 # Import optimizer module
 from .ao_optimizers import SequentialOptimizer, SPGDOptimizer, RandomSearchOptimizer
+from .ao_optimizers.metrics import get_metric_function as _get_metric_function, METRIC_FUNCTIONS
 
 
 class ScannerImageProvider:
@@ -331,47 +332,12 @@ class AdaptiveOpticsController(BaseSequencer):
         self._setup_metrics()
 
     def _setup_metrics(self):
-        """Initialize dictionary of available optimization metrics"""
-        self.metric_functions = {
-            'laplacian_variance': self._metric_laplacian_variance,
-            'brenner': self._metric_brenner,
-            'normalized_variance': self._metric_normalized_variance,
-            'tenengrad': self._metric_tenengrad,
-            'gradient_squared': self._metric_gradient_squared,
-        }
-
-    def _metric_laplacian_variance(self, img):
-        """Laplacian variance - sensitive to focus, but noise-sensitive"""
-        from scipy.ndimage import laplace
-        return np.mean(laplace(img)**2) / (np.mean(img) + 1e-12)
-
-    def _metric_brenner(self, img):
-        """Brenner gradient - more robust to Poisson noise"""
-        # Vertical and horizontal gradients with 2-pixel spacing
-        grad_v = np.sum((img[2:, :] - img[:-2, :])**2)
-        grad_h = np.sum((img[:, 2:] - img[:, :-2])**2)
-        return (grad_v + grad_h) / (np.sum(img) + 1e-12)
-
-    def _metric_normalized_variance(self, img):
-        """Normalized variance - simple, less sensitive to focus but robust"""
-        return np.var(img) / (np.mean(img) + 1e-12)
-
-    def _metric_tenengrad(self, img):
-        """Tenengrad (Sobel-based) - standard autofocus metric"""
-        from scipy.ndimage import sobel
-        grad_x = sobel(img, axis=1)
-        grad_y = sobel(img, axis=0)
-        return np.mean(grad_x**2 + grad_y**2)
-
-    def _metric_gradient_squared(self, img):
-        """Sum of squared gradients - simpler than Tenengrad"""
-        grad_v = np.sum(np.diff(img, axis=0)**2)
-        grad_h = np.sum(np.diff(img, axis=1)**2)
-        return (grad_v + grad_h) / (np.sum(img) + 1e-12)
+        """Initialize metric functions from standalone metrics module."""
+        self.metric_functions = METRIC_FUNCTIONS
 
     def get_metric_function(self):
-        """Get the currently selected metric function"""
-        return self.metric_functions.get(self.selected_metric, self._metric_laplacian_variance)
+        """Get the currently selected metric function."""
+        return _get_metric_function(self.selected_metric)
 
     def setInitialZernikeModes(self,indices,initial_coefficients_nm=None,amplitude_scan_nm=None):
         if indices is None or len(indices)==0:
@@ -438,55 +404,40 @@ class AdaptiveOpticsController(BaseSequencer):
         if hasattr(self, '_dependents') and dep in self._dependents:
             self._dependents.remove(dep)
 
+    def _plot_ao_metric(self, plot_data):
+        """Send plot data to GUI metrics display. Separate from DM updates.
+
+        Args:
+            plot_data: dict with keys matching updateAOMetrics signature:
+                mode, metric_values, parameter_stack, fit_coeffs, iteration, optim_method
+        """
+        if not hasattr(self, '_dependents'):
+            return
+        for d in list(self._dependents):
+            if hasattr(d, 'updateAOMetrics'):
+                d.updateAOMetrics(**plot_data)
+
     def _notify_dependents(self, params=None):
+        """Notify GUI dependents of DM state change (surface, sliders). No metrics plot."""
         if not hasattr(self, '_dependents'):
             return
         if self.verbose:
             print(f"AO Sequencer: notifying {len(self._dependents)} dependent(s)")
         for d in list(self._dependents):
             d.on_sequencer_update(params=params)
-            # Call updateAOMetrics if available
-            if hasattr(d, 'updateAOMetrics'):
-                # Check if we have iteration-based data (SPGD, random_search) or scan-based data
-                if params and 'spgd_metric_history' in params:
-                    # SPGD iteration-based updates
-                    metric_history = params['spgd_metric_history']
-                    iteration = params.get('iteration', len(metric_history)-1)
-                    d.updateAOMetrics(metric_history, mode='iteration', iteration=iteration)
-                elif params and 'random_search_metric_history' in params:
-                    # Random search iteration-based updates
-                    metric_history = params['random_search_metric_history']
-                    iteration = params.get('iteration', len(metric_history)-1)
-                    d.updateAOMetrics(metric_history, mode='iteration', iteration=iteration)
-                elif self.parameter_stack is not None and self.metric_values is not None:
-                    # Scan-based methods (simple_interpolation, weighted_fit)
-                    d.updateAOMetrics(self.metric_values, self.parameter_stack, mode='scan')
 
     def _update_dm_and_notify(self, coefficients, **extra_params):
         """
-        Apply coefficients to DM hardware and notify GUI (standard pattern).
+        Apply coefficients to DM hardware and notify GUI (DM surface + sliders).
 
-        This is the STANDARD PATTERN for all DM updates in optimization algorithms.
-        Every DM update triggers a GUI notification to keep visualizations synchronized.
+        Does NOT update the metrics plot — use _plot_ao_metric() for that.
 
         Parameters:
         -----------
         coefficients : array-like
             Zernike coefficients to apply to DM
         **extra_params : dict
-            Additional parameters to include in notification (e.g., iteration, metric)
-
-        Usage Examples:
-        ---------------
-        # Simple update:
-        self._update_dm_and_notify(coeffs)
-
-        # With iteration info (for SPGD, random_search):
-        self._update_dm_and_notify(coeffs, iteration=42, metric=123.4,
-                                    spgd_metric_history=[...])
-
-        # With scan info (for scan-based methods):
-        self._update_dm_and_notify(coeffs, zernike_index=4, scan_value=50.0)
+            Additional parameters passed to on_sequencer_update()
         """
         # Update DM hardware
         self.deformable_mirror.set_phase_map_from_zernike(coefficients)
@@ -596,167 +547,26 @@ class AdaptiveOpticsController(BaseSequencer):
         self.deformable_mirror.display_surface()
         print(f"Applied coefficients to DM: {coefficients[:min(12, len(coefficients))]}")
 
-    def computeOptimalParametersSimpleInterpolation(self,image_stack,parameter_stack,optim_metric, plot=False):
-        if len(image_stack) != len(parameter_stack) or len(image_stack)<3:
-            raise ValueError("Image stack and parameter stack must have the same non-zero length.")
-        # take metic for each image in the stack
-        metric_values = [optim_metric(img) for img in image_stack]
-        if self.verbose:
-            print("Metric values during scan:", metric_values)
-        # try a simple quadratic interpolation around the maximum
-        max_index = np.argmax(metric_values)
-        miss_max=0
-        # handle edge cases (max at the boundaries)
-        if max_index == 0:
-            miss_max=-1
-        if max_index == len(metric_values) - 1:
-            miss_max=1
-            max_index -= 1  # shift to allow interpolation
-
-        # for tests geenrate a plot of the metric values against parameters
-        if plot:
-            import matplotlib.pyplot as plt
-            plt.figure()
-            plt.plot(parameter_stack, metric_values, 'o-')
-            plt.xlabel('Parameter value')
-            plt.ylabel('Metric value')
-            plt.title('Optimization Metric vs Parameter')
-            plt.grid(True)
-            plt.savefig('optimization_metric_plot.png') 
-            plt.close()
-
-        # perform quadratic interpolation
-        x0, x1, x2 = parameter_stack[max_index - 1], parameter_stack[max_index], parameter_stack[max_index + 1]
-        y0, y1, y2 = metric_values[max_index - 1], metric_values[max_index], metric_values[max_index + 1]
-        # general formula for the vertex of a parabola given three points (not equally spaced)
-        yd1=(y1-y0)
-        yd2=(y2-y1)
-        xd1=(x1-x0)
-        xd2=(x2-x1)
-        denom = yd1*xd2-yd2*xd1
-#           equally spaced: 
-        #denom = (y0 - 2 * y1 + y2)
-        if denom == 0:
-            optimal_parameter = x1
-        else:   
-        # equally spaced    
-            #   optimal_parameter = x1 + 0.5 * ((y0 - y2) / denom) * (x2 - x0) / 2
-            optimal_parameter = x1 + 0.5 * (yd1*xd2*xd2 + yd2*xd1*xd1) / denom
-        self.parameter_stack=parameter_stack
-        self.metric_values=metric_values
-        return optimal_parameter,miss_max,metric_values[max_index]
-
-    def computeOptimalParametersWeightedFit(self, image_stack, parameter_stack, optim_metric, plot=False):
-        """
-        Compute optimal parameter using ALL scan points with Poisson weighting.
-
-        More robust to noise than 3-point interpolation by using all measured data.
-        Poisson weighting: w ∝ √metric (since variance ∝ mean for Poisson noise).
-
-        Parameters:
-        -----------
-        image_stack : list of images
-            All acquired images during parameter scan
-        parameter_stack : array-like
-            Corresponding parameter values
-        optim_metric : callable
-            Function to compute image quality metric
-        plot : bool
-            If True, save diagnostic plot
-
-        Returns:
-        --------
-        optimal_parameter : float
-            Estimated optimal parameter value
-        miss_max : int
-            -1 if optimum below scan range, +1 if above, 0 if within
-        optimal_metric : float
-            Predicted metric value at optimum (or best measured if parabola invalid)
-        """
-        if len(image_stack) == 0 or len(parameter_stack) == 0:
-            raise ValueError("Image stack and parameter stack must have non-zero length.")
-        if len(image_stack) != len(parameter_stack):
-            raise ValueError("Image stack and parameter stack must have the same length.")
-
-        # Compute metric for each image
-        metric_values = np.array([optim_metric(img) for img in image_stack])
-        if self.verbose:
-            print(f"Metric values (weighted fit): {metric_values}")
-
-        # Poisson weighting: weight ∝ √metric (variance ∝ mean)
-        # Add small epsilon to avoid division by zero
-        weights = np.sqrt(np.maximum(metric_values, 1e-12))
-
-        # Fit quadratic to ALL points with weights
-        try:
-            coeffs = np.polyfit(parameter_stack, metric_values, deg=2, w=weights)
-            a, b, c = coeffs
-        except Exception as e:
-            if self.verbose:
-                print(f"Polynomial fit failed: {e}, falling back to best measured point")
-            max_idx = np.argmax(metric_values)
-            return parameter_stack[max_idx], 0, metric_values[max_idx]
-
-        # Check if parabola opens downward (concave) - required for maximum
-        if a >= 0:
-            # Not a maximum - parabola opens upward or is flat
-            if self.verbose:
-                print(f"Parabola opens upward (a={a:.2e}), using best measured point")
-            max_idx = np.argmax(metric_values)
-            return parameter_stack[max_idx], 0, metric_values[max_idx]
-
-        # Compute vertex of parabola: x = -b / (2a)
-        optimal_parameter = -b / (2 * a)
-
-        # Check if optimum is within scan range
-        miss_max = 0
-        min_param = np.min(parameter_stack)
-        max_param = np.max(parameter_stack)
-
-        if optimal_parameter < min_param:
-            miss_max = -1
-            if self.verbose:
-                print(f"Optimum below scan range: {optimal_parameter:.2f} < {min_param:.2f}")
-        elif optimal_parameter > max_param:
-            miss_max = 1
-            if self.verbose:
-                print(f"Optimum above scan range: {optimal_parameter:.2f} > {max_param:.2f}")
-
-        # Predicted optimal metric value at vertex
-        optimal_metric = a * optimal_parameter**2 + b * optimal_parameter + c
-
-        # Diagnostic plot if requested
-        if plot:
-            import matplotlib.pyplot as plt
-            plt.figure(figsize=(10, 6))
-
-            # Measured points
-            plt.scatter(parameter_stack, metric_values, c='blue', s=100,
-                       alpha=0.6, label='Measured')
-
-            # Fitted parabola
-            param_fine = np.linspace(min_param, max_param, 200)
-            metric_fine = a * param_fine**2 + b * param_fine + c
-            plt.plot(param_fine, metric_fine, 'r--', linewidth=2,
-                    label='Weighted fit')
-
-            # Optimal point
-            plt.scatter([optimal_parameter], [optimal_metric], c='red', s=200,
-                       marker='*', edgecolors='black', linewidth=2,
-                       label=f'Optimum: {optimal_parameter:.2f}')
-
-            plt.xlabel('Parameter value', fontsize=12)
-            plt.ylabel('Metric value', fontsize=12)
-            plt.title('All-Points Weighted Fit (Poisson weighting)', fontsize=14)
-            plt.legend(fontsize=10)
-            plt.grid(True, alpha=0.3)
-            plt.savefig('optimization_weighted_fit.png', dpi=150, bbox_inches='tight')
-            plt.close()
-
-        # Store for diagnostics
+    def computeOptimalParametersSimpleInterpolation(self, image_stack, parameter_stack, optim_metric, plot=False):
+        """Backward-compatible wrapper around fitting.compute_optimal_simple_interpolation."""
+        from .ao_optimizers.fitting import compute_optimal_simple_interpolation
+        optimal_parameter, miss_max, best_metric, metric_values = compute_optimal_simple_interpolation(
+            image_stack, parameter_stack, optim_metric,
+            verbose=self.verbose, plot=plot
+        )
         self.parameter_stack = parameter_stack
         self.metric_values = metric_values
+        return optimal_parameter, miss_max, best_metric
 
+    def computeOptimalParametersWeightedFit(self, image_stack, parameter_stack, optim_metric, plot=False):
+        """Backward-compatible wrapper around fitting.compute_optimal_weighted_fit."""
+        from .ao_optimizers.fitting import compute_optimal_weighted_fit
+        optimal_parameter, miss_max, optimal_metric, fit_coeffs, metric_values = compute_optimal_weighted_fit(
+            image_stack, parameter_stack, optim_metric,
+            verbose=self.verbose, plot=plot
+        )
+        self.parameter_stack = parameter_stack
+        self.metric_values = metric_values
         return optimal_parameter, miss_max, optimal_metric
 
     def loop_SPGD(self):
@@ -949,12 +759,11 @@ class AdaptiveOpticsController(BaseSequencer):
 
     def _updateImageAndDM(self, current_coefficients, zernike_index, val):
         """
-        Update DM, notify, wait, and acquire image.
+        Update DM, notify GUI, wait, and acquire image. No metrics plot.
 
         Used by scan-based methods (simple_interpolation, weighted_fit).
-        Combines the most common sequence: DM update -> notify -> wait -> acquire.
+        Combines: DM update -> GUI notify (surface/sliders) -> wait -> acquire.
         """
-        # Use helper for DM update + notification
         self._update_dm_and_notify(current_coefficients,
                                     zernike_index=zernike_index,
                                     scan_value=val)

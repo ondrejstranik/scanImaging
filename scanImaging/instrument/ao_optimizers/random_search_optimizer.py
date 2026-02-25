@@ -14,6 +14,7 @@ Algorithm:
 import time
 import numpy as np
 from .base_optimizer import BaseOptimizer
+from .metrics import get_metric_function
 
 
 class RandomSearchOptimizer(BaseOptimizer):
@@ -41,6 +42,9 @@ class RandomSearchOptimizer(BaseOptimizer):
         # Continuous scan mode
         self.continuous_scan = controller.continuous_scan
 
+        # Metric
+        self.selected_metric = controller.selected_metric
+
         # State
         self.zernike_indices = None
         self.initial_coefficients_full = None
@@ -62,7 +66,7 @@ class RandomSearchOptimizer(BaseOptimizer):
         self.initial_coefficients_full = initial_coefficients.copy()
         self.best_coeffs = initial_coefficients.copy()
         self.zernike_indices = zernike_indices
-        self.metric_fn = self.controller.get_metric_function()
+        self.metric_fn = get_metric_function(self.selected_metric)
         self.iteration = 0
         self.metric_history = []
 
@@ -73,7 +77,7 @@ class RandomSearchOptimizer(BaseOptimizer):
             print(f"Iterations: {self.max_iterations}")
             print(f"Search range: +/-{self.search_range} nm")
             print(f"Modes: {self.zernike_indices}")
-            print(f"Using metric: {self.controller.selected_metric}")
+            print(f"Using metric: {self.selected_metric}")
 
         # Measure initial metric
         self._apply_coefficients_to_dm(self.best_coeffs)
@@ -119,11 +123,14 @@ class RandomSearchOptimizer(BaseOptimizer):
 
         self.metric_history.append(self.best_metric)
 
-        # Apply best coefficients to DM and notify GUI (standard pattern)
-        self.controller._update_dm_and_notify(self.best_coeffs,
-                                               iteration=self.iteration,
-                                               metric=self.best_metric,
-                                               random_search_metric_history=self.metric_history.copy())
+        # Apply best coefficients to DM and notify GUI
+        self._update_dm_and_notify(self.best_coeffs)
+        self._plot_ao_metric({
+            'mode': 'iteration',
+            'metric_values': self.metric_history.copy(),
+            'iteration': self.iteration,
+            'optim_method': 'random_search',
+        })
 
         self.iteration += 1
 
@@ -154,17 +161,20 @@ class RandomSearchOptimizer(BaseOptimizer):
                 improvement = (self.best_metric - self.metric_history[0]) / (abs(self.metric_history[0]) + 1e-12) * 100
                 print(f"Improvement: {improvement:.1f}%")
 
-        # Final notification with complete history
-        self.controller._update_dm_and_notify(self.best_coeffs,
-                                               final_coefficients=self.best_coeffs.copy(),
-                                               random_search_metric_history=self.metric_history.copy(),
-                                               iteration=len(self.metric_history) - 1)
+        # Final notification
+        self._update_dm_and_notify(self.best_coeffs)
+        self._plot_ao_metric({
+            'mode': 'iteration',
+            'metric_values': self.metric_history.copy(),
+            'iteration': len(self.metric_history) - 1,
+            'optim_method': 'random_search',
+        })
 
         # Stop continuous scan mode if enabled
         if self.continuous_scan:
             if self.verbose:
                 print("Stopping continuous acquisition mode...")
-            self.controller.image_provider.stopContinuousMode()
+            self._stop_continuous_mode()
 
     def run(self):
         """
@@ -175,7 +185,7 @@ class RandomSearchOptimizer(BaseOptimizer):
         """
         try:
             if self.continuous_scan:
-                self.controller.image_provider.startContinuousMode()
+                self._start_continuous_mode()
 
             yield from super().run()
         finally:

@@ -12,6 +12,8 @@ Implements the original sequential hill-climbing algorithm that:
 import numpy as np
 from pathlib import Path
 from .base_optimizer import BaseOptimizer
+from .fitting import compute_optimal_simple_interpolation, compute_optimal_weighted_fit
+from .metrics import get_metric_function
 
 
 class SequentialOptimizer(BaseOptimizer):
@@ -50,6 +52,9 @@ class SequentialOptimizer(BaseOptimizer):
         # Continuous scan mode
         self.continuous_scan = controller.continuous_scan
 
+        # Metric
+        self.selected_metric = controller.selected_metric
+
         # Optimization state
         self.zernike_indices = None
         self.current_coefficients = None
@@ -70,6 +75,7 @@ class SequentialOptimizer(BaseOptimizer):
         self.imageSet = []
         self.parameter_set = []
         self.opt_v_set = []
+        self.opt_v_measured=[]
 
     def initialize(self, initial_coefficients, zernike_indices, scan_amplitudes, **kwargs):
         """
@@ -104,7 +110,7 @@ class SequentialOptimizer(BaseOptimizer):
 
         # Start continuous scan mode if enabled
         if self.continuous_scan:
-            self.controller.image_provider.startContinuousMode()
+            self._start_continuous_mode()
 
         # Reset state
         self.current_mode_idx = 0
@@ -164,8 +170,8 @@ class SequentialOptimizer(BaseOptimizer):
         for val in scan_values:
             self.current_coefficients[zernike_index] = val
 
-            # Acquire image and update DM
-            image = self.controller._updateImageAndDM(
+            # Acquire image and update DM (with GUI notification)
+            image = self._update_image_and_dm(
                 current_coefficients=self.current_coefficients,
                 zernike_index=zernike_index,
                 val=val
@@ -175,7 +181,7 @@ class SequentialOptimizer(BaseOptimizer):
 
             yield  # Allow interruption
 
-            if self.controller._stop_requested:
+            if self.stop_requested:
                 if self.verbose:
                     print("Stop requested - exiting AO loop")
                 return None
@@ -187,27 +193,40 @@ class SequentialOptimizer(BaseOptimizer):
 
         # Find optimal parameter with range extension if needed
         miss_max = 1
+        fit_coeffs = None
+        metric_values = None
+        metric_fn = get_metric_function(self.selected_metric)
         while num_scan_points < 100 and abs(miss_max) != 0:
-            metric_fn = self.controller.get_metric_function()
 
             # Select optimization algorithm
             if self.optim_method == 'weighted_fit':
-                optimal_value, miss_max, opt_v = self.controller.computeOptimalParametersWeightedFit(
+                optimal_value, miss_max, opt_v, fit_coeffs, metric_values = compute_optimal_weighted_fit(
                     self.accumulated_images,
                     self.accumulated_params,
-                    optim_metric=metric_fn,
+                    metric_fn=metric_fn,
+                    verbose=self.verbose,
                     plot=self.print_plot
                 )
                 range_check_params = self.accumulated_params
             else:  # 'simple_interpolation'
-                optimal_value, miss_max, opt_v = self.controller.computeOptimalParametersSimpleInterpolation(
+                optimal_value, miss_max, opt_v, metric_values = compute_optimal_simple_interpolation(
                     image_stack,
                     parameter_stack,
-                    optim_metric=metric_fn,
+                    metric_fn=metric_fn,
+                    verbose=self.verbose,
                     plot=self.print_plot
                 )
+                fit_coeffs = None
                 range_check_params = parameter_stack
 
+            # Update metrics plot after fitting
+            self._plot_ao_metric({
+                'mode': 'scan',
+                'metric_values': list(metric_values) if metric_values is not None else [],
+                'parameter_stack': list(range_check_params),
+                'fit_coeffs': fit_coeffs,
+                'optim_method': self.optim_method,
+            })
             # Adjust scan range if optimum is outside
             if miss_max != 0:
                 num_scan_points += 1
@@ -230,7 +249,7 @@ class SequentialOptimizer(BaseOptimizer):
 
             if added_value is not None:
                 self.current_coefficients[zernike_index] = added_value
-                image = self.controller._updateImageAndDM(
+                image = self._update_image_and_dm(
                     current_coefficients=self.current_coefficients,
                     zernike_index=zernike_index,
                     val=added_value
@@ -250,18 +269,14 @@ class SequentialOptimizer(BaseOptimizer):
 
                 yield  # Allow interruption
 
-                if self.controller._stop_requested:
+                if self.stop_requested:
                     if self.verbose:
                         print("Stop requested - exiting AO loop")
                     return None
 
-        # Apply optimal value
+        # Apply optimal value and notify GUI (single committed update)
         self.initial_coefficients[zernike_index] = optimal_value
         self.current_coefficients[zernike_index] = optimal_value
-        self._apply_coefficients_to_dm(self.current_coefficients)
-
-        # Notify dependents
-        self._notify_progress(coefficients=self.initial_coefficients.copy())
 
         if self.verbose:
             print(f"Optimized Zernike index {zernike_index} to value {optimal_value:.2f} nm "
@@ -291,26 +306,16 @@ class SequentialOptimizer(BaseOptimizer):
         # Check if this mode is done
         mode_complete = converged or (self.current_mode_iteration >= max_iterations)
 
+        opt_vm = None
         if mode_complete:
-            # Get final image for this mode
+            # Notify GUI with final coefficients, then acquire final image
+            self._update_dm_and_notify(self.initial_coefficients)
             image = self._acquire_image()
             self.imageSet.append(image)
             self.parameter_set.append(self.initial_coefficients.copy())
             self.opt_v_set.append(opt_v)
-
-            # Final update for this mode
-            self.controller._updateImageAndDM(
-                current_coefficients=self.initial_coefficients,
-                zernike_index=0,
-                val=0
-            )
-
-            # Notify final coefficients
-            try:
-                self._notify_progress(final_coefficients=self.initial_coefficients.copy())
-            except Exception as e:
-                if self.verbose:
-                    print(f"Error notifying dependents after mode optimization: {e}")
+            opt_vm = metric_fn(image)
+            self.opt_v_measured.append(opt_vm)
 
             # Move to next mode
             self.current_mode_idx += 1
@@ -320,6 +325,7 @@ class SequentialOptimizer(BaseOptimizer):
         progress = {
             'coefficients': self.initial_coefficients.copy(),
             'metric': opt_v,
+            'metric_measured': opt_vm,
             'iteration': self.iteration,
             'mode_idx': self.current_mode_idx,
             'zernike_index': zernike_index,
@@ -358,7 +364,7 @@ class SequentialOptimizer(BaseOptimizer):
         if self.continuous_scan:
             if self.verbose:
                 print("Stopping continuous acquisition mode...")
-            self.controller.image_provider.stopContinuousMode()
+            self._stop_continuous_mode()
 
     def run(self):
         """

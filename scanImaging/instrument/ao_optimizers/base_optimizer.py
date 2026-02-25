@@ -27,8 +27,6 @@ class BaseOptimizer(ABC):
             controller: AdaptiveOpticsController instance providing access to:
                 - deformable_mirror: DM hardware interface
                 - image_provider: Camera/image acquisition interface
-                - image_processor: Optional image processing pipeline
-                - get_metric_function(): Method to get metric computation function
                 - acquire_and_process_image(): Centralized image acquisition
                 - verbose: Debug output flag
                 - _stop_requested: Flag to check for user interruption
@@ -106,7 +104,7 @@ class BaseOptimizer(ABC):
 
         while not self.is_complete():
             # Check for user stop request
-            if self.controller._stop_requested:
+            if self.stop_requested:
                 if self.verbose:
                     print("Stop requested - exiting optimization")
                 return
@@ -147,13 +145,51 @@ class BaseOptimizer(ABC):
 
     def _apply_coefficients_to_dm(self, coefficients):
         """
-        Apply coefficients to deformable mirror.
+        Apply coefficients to deformable mirror (no GUI notification).
+
+        Use this for transient states (e.g. SPGD perturbations) where
+        the GUI should not update. For committed updates with GUI
+        notification, use _update_dm_and_notify().
 
         Args:
             coefficients: np.ndarray of Zernike coefficients
         """
         self.controller.deformable_mirror.set_phase_map_from_zernike(coefficients)
         self.controller.deformable_mirror.display_surface()
+
+    def _update_dm_and_notify(self, coefficients, **extra_params):
+        """
+        Apply coefficients to DM and notify GUI (standard committed update).
+
+        Delegates to controller._update_dm_and_notify which:
+        1. Updates DM hardware
+        2. Sends 'current_coefficients' + extra_params to GUI dependents
+
+        Args:
+            coefficients: np.ndarray of Zernike coefficients
+            **extra_params: Additional notification params (e.g. iteration, metric_history)
+        """
+        self.controller._update_dm_and_notify(coefficients, **extra_params)
+
+    def _update_image_and_dm(self, current_coefficients, zernike_index, val):
+        """
+        Update DM, notify GUI, wait for settling, and acquire image.
+
+        Used by scan-based methods. Combines: DM update -> notify -> sleep -> acquire.
+
+        Args:
+            current_coefficients: Full coefficient array to apply
+            zernike_index: Which Zernike mode is being scanned
+            val: Current scan value for this mode
+
+        Returns:
+            np.ndarray: Acquired image
+        """
+        return self.controller._updateImageAndDM(
+            current_coefficients=current_coefficients,
+            zernike_index=zernike_index,
+            val=val
+        )
 
     def _acquire_image(self):
         """
@@ -164,28 +200,20 @@ class BaseOptimizer(ABC):
         """
         return self.controller.acquire_and_process_image()
 
-    def _compute_metric(self, image):
-        """
-        Compute image quality metric.
+    def _start_continuous_mode(self):
+        """Start continuous image acquisition mode."""
+        self.controller.image_provider.startContinuousMode()
 
-        Args:
-            image: np.ndarray image
+    def _stop_continuous_mode(self):
+        """Stop continuous image acquisition mode."""
+        self.controller.image_provider.stopContinuousMode()
 
-        Returns:
-            float: Metric value (higher is better)
-        """
-        metric_fn = self.controller.get_metric_function()
-        return metric_fn(image)
+    def _plot_ao_metric(self, plot_data):
+        """Send plot data to GUI metrics display. Separate from DM updates."""
+        self.controller._plot_ao_metric(plot_data)
 
-    def _notify_progress(self, **params):
-        """
-        Notify GUI/dependents of progress update.
+    @property
+    def stop_requested(self):
+        """Check if user has requested stop."""
+        return self.controller._stop_requested
 
-        Args:
-            **params: Parameters to pass to dependents (e.g., coefficients, metric, etc.)
-        """
-        try:
-            self.controller._notify_dependents(params=params)
-        except Exception as e:
-            if self.verbose:
-                print(f"Warning: Failed to notify dependents: {e}")

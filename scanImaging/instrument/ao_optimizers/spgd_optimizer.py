@@ -16,6 +16,7 @@ Algorithm:
 import time
 import numpy as np
 from .base_optimizer import BaseOptimizer
+from .metrics import get_metric_function
 
 
 class SPGDOptimizer(BaseOptimizer):
@@ -48,6 +49,9 @@ class SPGDOptimizer(BaseOptimizer):
         # Continuous scan mode
         self.continuous_scan = controller.continuous_scan
 
+        # Metric
+        self.selected_metric = controller.selected_metric
+
         # State
         self.zernike_indices = None
         self.coeffs = None
@@ -67,7 +71,7 @@ class SPGDOptimizer(BaseOptimizer):
         """
         self.coeffs = initial_coefficients.copy()
         self.zernike_indices = zernike_indices
-        self.metric_fn = self.controller.get_metric_function()
+        self.metric_fn = get_metric_function(self.selected_metric)
         self.iteration = 0
         self.metric_history = []
         self.coeff_history = []
@@ -80,7 +84,7 @@ class SPGDOptimizer(BaseOptimizer):
             print(f"Delta: {self.delta} nm")
             print(f"Iterations: {self.max_iterations}")
             print(f"Modes: {self.zernike_indices}")
-            print(f"Using metric: {self.controller.selected_metric}")
+            print(f"Using metric: {self.selected_metric}")
 
     def step(self):
         """
@@ -106,7 +110,7 @@ class SPGDOptimizer(BaseOptimizer):
 
         yield  # Allow interruption
 
-        if self.controller._stop_requested:
+        if self.stop_requested:
             return None
 
         # Measure metric with negative perturbation
@@ -119,7 +123,7 @@ class SPGDOptimizer(BaseOptimizer):
 
         yield  # Allow interruption
 
-        if self.controller._stop_requested:
+        if self.stop_requested:
             return None
 
         # Estimate gradient and update coefficients
@@ -131,11 +135,14 @@ class SPGDOptimizer(BaseOptimizer):
         self.metric_history.append(avg_metric)
         self.coeff_history.append(self.coeffs.copy())
 
-        # Apply updated coefficients and notify GUI (standard pattern)
-        self.controller._update_dm_and_notify(self.coeffs,
-                                               iteration=self.iteration,
-                                               metric=avg_metric,
-                                               spgd_metric_history=self.metric_history.copy())
+        # Apply updated coefficients and notify GUI
+        self._update_dm_and_notify(self.coeffs)
+        self._plot_ao_metric({
+            'mode': 'iteration',
+            'metric_values': self.metric_history.copy(),
+            'iteration': self.iteration,
+            'optim_method': 'spgd',
+        })
 
         # Print progress every 5 iterations
         if self.verbose and (self.iteration % 5 == 0 or self.iteration == self.max_iterations - 1):
@@ -183,14 +190,15 @@ class SPGDOptimizer(BaseOptimizer):
             if self.metric_history:
                 print(f"Final metric: {self.metric_history[-1]:.4f}")
 
-        # Final notification with complete metric history
+        # Final notification
         try:
-            self._notify_progress(
-                current_coefficients=self.coeffs.copy(),
-                final_coefficients=self.coeffs.copy(),
-                spgd_metric_history=self.metric_history.copy(),
-                iteration=len(self.metric_history) - 1
-            )
+            self._update_dm_and_notify(self.coeffs)
+            self._plot_ao_metric({
+                'mode': 'iteration',
+                'metric_values': self.metric_history.copy(),
+                'iteration': len(self.metric_history) - 1,
+                'optim_method': 'spgd',
+            })
         except Exception:
             pass
 
@@ -198,7 +206,7 @@ class SPGDOptimizer(BaseOptimizer):
         if self.continuous_scan:
             if self.verbose:
                 print("Stopping continuous acquisition mode...")
-            self.controller.image_provider.stopContinuousMode()
+            self._stop_continuous_mode()
 
     def run(self):
         """
@@ -209,7 +217,7 @@ class SPGDOptimizer(BaseOptimizer):
         """
         try:
             if self.continuous_scan:
-                self.controller.image_provider.startContinuousMode()
+                self._start_continuous_mode()
 
             yield from super().run()
         finally:

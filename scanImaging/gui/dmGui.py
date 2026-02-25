@@ -949,7 +949,8 @@ class DMGui(BaseGUI):
         self.active_aperture = self.imager.active_aperture
         self.imageLayer.data = self.imageDM
     
-    def updateAOMetrics(self, metric_values, parameter_stack=None, mode='scan', iteration=None):
+    def updateAOMetrics(self, metric_values, parameter_stack=None, mode='scan',
+                        iteration=None, fit_coeffs=None, optim_method=''):
         '''
         Callback from the adaptive optics sequencer when new metric values are available.
 
@@ -960,9 +961,13 @@ class DMGui(BaseGUI):
         parameter_stack : list or array, optional
             Parameter values (for scan-based methods) or iteration numbers (for SPGD)
         mode : str
-            'scan' for scan-based methods, 'iteration' for SPGD
+            'scan' for scan-based methods, 'iteration' for iteration-based (SPGD, random search)
         iteration : int, optional
-            Current iteration number (for cumulative SPGD plotting)
+            Current iteration number (for cumulative iteration plotting)
+        fit_coeffs : tuple of (a, b, c) or None
+            Polynomial fit coefficients for weighted fit overlay
+        optim_method : str
+            Algorithm name for dynamic title (e.g. 'spgd', 'random_search', 'weighted_fit')
         '''
         # Get verbose flag (use sequencer's verbose if available)
         verbose = getattr(self.aoSequencer, 'verbose', False) if hasattr(self, 'aoSequencer') and self.aoSequencer else False
@@ -972,41 +977,76 @@ class DMGui(BaseGUI):
             if parameter_stack is not None:
                 print(f" Parameter stack: {parameter_stack}")
 
+        # Format algorithm name for title
+        method_labels = {
+            'spgd': 'SPGD',
+            'random_search': 'Random Search',
+            'simple_interpolation': 'Simple Interpolation',
+            'weighted_fit': 'Weighted Fit',
+        }
+        method_label = method_labels.get(optim_method, optim_method.replace('_', ' ').title() if optim_method else 'Scan')
+
         # Update the plot
         try:
-            print(f"DEBUG: updateAOMetrics called with mode={mode}, len(metric_values)={len(metric_values) if metric_values is not None else 0}")
-
             if mode == 'scan':
                 # Scan-based methods: plot parameter vs metric
                 self.ao_metric_ax.clear()
-                self.ao_metric_ax.plot(parameter_stack, metric_values, 'o-', linewidth=2, markersize=6)
+
+                if fit_coeffs is not None:
+                    # Weighted fit mode: show scatter + fitted parabola
+                    a, b, c = fit_coeffs
+                    param_arr = np.array(parameter_stack)
+                    metric_arr = np.array(metric_values)
+
+                    # Measured points as scatter
+                    self.ao_metric_ax.scatter(param_arr, metric_arr, c='blue', s=100,
+                                              alpha=0.6, label='Measured')
+
+                    # Fitted parabola
+                    min_param, max_param = np.min(param_arr), np.max(param_arr)
+                    param_fine = np.linspace(min_param, max_param, 200)
+                    metric_fine = a * param_fine**2 + b * param_fine + c
+                    self.ao_metric_ax.plot(param_fine, metric_fine, 'r--', linewidth=2,
+                                           label='Weighted fit')
+
+                    # Optimal point (vertex of parabola)
+                    if a < 0:  # concave parabola
+                        opt_param = -b / (2 * a)
+                        opt_metric = a * opt_param**2 + b * opt_param + c
+                        self.ao_metric_ax.scatter([opt_param], [opt_metric], c='red', s=200,
+                                                  marker='*', edgecolors='black', linewidth=2,
+                                                  label=f'Optimum: {opt_param:.2f}')
+                else:
+                    # No fit coefficients: show line plot with max marker
+                    self.ao_metric_ax.plot(parameter_stack, metric_values, 'o-', linewidth=2, markersize=6)
+
+                    # Highlight the maximum
+                    max_idx = np.argmax(metric_values)
+                    self.ao_metric_ax.plot(parameter_stack[max_idx], metric_values[max_idx],
+                                           'r*', markersize=15, label=f'Max: {metric_values[max_idx]:.2f}')
+
                 self.ao_metric_ax.set_xlabel('Parameter value (nm)')
                 self.ao_metric_ax.set_ylabel('Metric value')
-                self.ao_metric_ax.set_title('AO Optimization Metric (Scan)')
+                self.ao_metric_ax.set_title(f'AO Optimization Metric ({method_label})')
                 self.ao_metric_ax.grid(True, alpha=0.3)
-
-                # Highlight the maximum
-                max_idx = np.argmax(metric_values)
-                self.ao_metric_ax.plot(parameter_stack[max_idx], metric_values[max_idx],
-                                       'r*', markersize=15, label=f'Max: {metric_values[max_idx]:.2f}')
                 self.ao_metric_ax.legend()
 
             elif mode == 'iteration':
-                # SPGD: cumulative plot of iterations vs metric
+                # Iteration-based methods (SPGD, random search): cumulative plot
                 # Don't clear - accumulate points
                 if iteration is not None and len(metric_values) > 0:
                     # Just add the latest point
                     self.ao_metric_ax.plot([iteration], [metric_values[-1]],
-                                          'o-', color='blue', markersize=4)
+                                          'o', color='blue', markersize=4)
                 else:
                     # Full replot
                     self.ao_metric_ax.clear()
                     iterations = list(range(len(metric_values)))
-                    self.ao_metric_ax.plot(iterations, metric_values, 'o-', linewidth=2, markersize=4)
+                    self.ao_metric_ax.plot(iterations, metric_values, 'o', linewidth=2, markersize=4)
 
                 self.ao_metric_ax.set_xlabel('Iteration')
                 self.ao_metric_ax.set_ylabel('Metric value')
-                self.ao_metric_ax.set_title('AO Optimization Metric (SPGD)')
+                self.ao_metric_ax.set_title(f'AO Optimization Metric ({method_label})')
                 self.ao_metric_ax.grid(True, alpha=0.3)
 
                 # Show current best
@@ -1020,7 +1060,6 @@ class DMGui(BaseGUI):
             self.ao_metric_figure.tight_layout()
             self.ao_metric_canvas.draw()
             self.ao_metric_canvas.flush_events()  # Force immediate GUI update
-            print(f"DEBUG: Plot updated successfully for mode={mode}")
         except Exception as e:
             print(f"Error updating AO metrics plot: {e}")
             import traceback
