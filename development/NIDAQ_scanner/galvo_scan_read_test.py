@@ -371,10 +371,10 @@ specs_unidirectional={"rate":200000,
     "scanner_lag_samples_odd":0}       # Additional offset for odd lines (1, 3, 5, ...)
 
 specs_bidirectional={
-    "rate":200000,
+    "rate":100000,
     "fov_voltage":1.5,
-    "pixels_x":200,# we need at least ~8 samples per pixel. 
-    "pixels_y":200,# 512
+    "pixels_x":100,# we need at least ~8 samples per pixel. 
+    "pixels_y":100,# 512
     "line_rate":300,#250
     "flyback_frac":0.1,
     "flyback_frame_frac":20/512, #1.5/512
@@ -382,7 +382,7 @@ specs_bidirectional={
     # Timing compensation parameters (all default to 0)
     "scanner_lag_samples":0,           # Global lag: samples to skip at start of each line
     "scanner_lag_samples_even":0,      # Additional offset for even lines (0, 2, 4, ...)
-    "scanner_lag_samples_odd":0}       # Additional offset for odd lines (1, 3, 5, ...)
+    "scanner_lag_samples_odd":2}       # Additional offset for odd lines (1, 3, 5, ...)
 
 def setup_and_check_pattern(pattern_specs=specs_bidirectional):
     rate=int(pattern_specs["rate"])
@@ -670,7 +670,7 @@ def run():
     image_queue = queue.Queue(maxsize=3)
     display=Display()
     display.initialize_display(specs_bidirectional)
-    tasksfactory=FakeNIDaqTaskFactory()
+    tasksfactory=NIDaqTaskFactory()
     tasksfactory.set_rate(rate)
     ao_task=tasksfactory.create_ao_wrapper(total_scan_samples)
     do_task=tasksfactory.create_do_wrapper(total_scan_samples)
