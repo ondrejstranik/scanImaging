@@ -15,6 +15,28 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
 
+# Hierarchical optimization preset: recommended iterations per Zernike mode
+# Balanced compromise between shallow and deep tissue imaging
+# Based on empirical experience and Gibson-Lanni theoretical models
+HIERARCHICAL_ITERATIONS = {
+    # Tier 1: Defocus - always critical (shallow AND deep)
+    4: 6,   # Defocus - easiest to fit, establishes focal reference
+
+    # Tier 2: Astigmatism - always relevant (shallow AND deep)
+    3: 5,   # Oblique astigmatism - from tissue/coverslip tilt
+    5: 5,   # Vertical astigmatism - from tissue/coverslip tilt
+
+    # Tier 3: Spherical - increasingly important with depth
+    11: 4,  # Spherical aberration - critical >30 μm, moderate <30 μm
+
+    # Tier 4: Coma - secondary aberrations
+    6: 4,   # Vertical coma - from tilted interfaces
+    7: 4,   # Horizontal coma - from tilted interfaces
+
+    # Tier 5: Trefoil and higher-order (use global default)
+    # 8: use global default (typically 3)
+    # All others: use global optim_iterations value (typically 3)
+}
 
 
 class DMGui(BaseGUI):
@@ -502,23 +524,6 @@ class DMGui(BaseGUI):
         h2d.addWidget(lbl_verbose); h2d.addWidget(chk_verbose)
         vlay.addLayout(h2d)
 
-        # optimization method
-        h3 = QHBoxLayout()
-        lbl_method = QLabel("Optim method", ao_control_widget)
-        cb_method = QComboBox(ao_control_widget)
-        methods = ['simple_interpolation', 'steepest_descent']
-        cb_method.addItems(methods)
-        cb_method.setCurrentText(getattr(self.aoSequencer, 'optim_method', methods[0]))
-        def _on_method(txt):
-            try:
-                if self.aoSequencer is not None:
-                    self.aoSequencer.optim_method = str(txt)
-            except Exception:
-                pass
-        cb_method.currentTextChanged.connect(_on_method)
-        h3.addWidget(lbl_method); h3.addWidget(cb_method)
-        vlay.addLayout(h3)
-
         # optimization metric selector
         h3b = QHBoxLayout()
         lbl_metric = QLabel("Optimization metric", ao_control_widget)
@@ -551,12 +556,47 @@ class DMGui(BaseGUI):
         h3b.addWidget(lbl_metric); h3b.addWidget(cb_metric)
         vlay.addLayout(h3b)
 
+        # optimization algorithm selector
+        h3c = QHBoxLayout()
+        lbl_algorithm = QLabel("Optimization algorithm", ao_control_widget)
+        cb_algorithm = QComboBox(ao_control_widget)
+        algorithms = ['simple_interpolation', 'weighted_fit', 'spgd', 'random_search']
+        algorithm_descriptions = {
+            'simple_interpolation': '3-point fit (fast)',
+            'weighted_fit': 'All-points weighted (robust)',
+            'spgd': 'SPGD (simultaneous, very robust)',
+            'random_search': 'Random search (baseline)'
+        }
+        cb_algorithm.addItems([f"{alg} - {algorithm_descriptions.get(alg, '')}" for alg in algorithms])
+        current_algorithm = getattr(self.aoSequencer, 'optim_method', 'simple_interpolation')
+        try:
+            current_idx = algorithms.index(current_algorithm)
+            cb_algorithm.setCurrentIndex(current_idx)
+        except (ValueError, AttributeError):
+            cb_algorithm.setCurrentIndex(0)
+
+        def _on_algorithm(idx):
+            try:
+                if self.aoSequencer is not None:
+                    selected = algorithms[idx]
+                    self.aoSequencer.optim_method = selected
+                    print(f"Optimization algorithm set to: {selected}")
+            except Exception as e:
+                print(f"Error setting algorithm: {e}")
+        cb_algorithm.currentIndexChanged.connect(_on_algorithm)
+        h3c.addWidget(lbl_algorithm); h3c.addWidget(cb_algorithm)
+        vlay.addLayout(h3c)
+
         # initial zernike indices (comma-separated)
         h4 = QHBoxLayout()
         lbl_idxs = QLabel("Initial Zernike indices", ao_control_widget)
         le_idxs = QLineEdit(ao_control_widget)
-        default_idxs = getattr(self.aoSequencer, 'initial_zernike_indices', [4,5,6])
+        default_idxs = getattr(self.aoSequencer, 'initial_zernike_indices', [4,3,5,11,6,7])
         le_idxs.setText(','.join(map(str, default_idxs)))
+
+        # Store reference for later access
+        self.le_idxs = le_idxs
+
         def _on_idxs():
             print("AOGui: setting initial zernike indices")
             txt = le_idxs.text()
@@ -577,7 +617,7 @@ class DMGui(BaseGUI):
         h5 = QHBoxLayout()
         lbl_sizes = QLabel("Zernike step sizes in nm", ao_control_widget)
         le_sizes = QLineEdit(ao_control_widget)
-        default_sizes = getattr(self.aoSequencer, 'zernike_amplitude_scan_nm', [20,15,10])
+        default_sizes = getattr(self.aoSequencer, 'zernike_amplitude_scan_nm', [80,60,60,200,50,50])
         le_sizes.setText(','.join(map(str, default_sizes)))
         def _on_sizes():
             txt = le_sizes.text()
@@ -594,6 +634,224 @@ class DMGui(BaseGUI):
         le_sizes.editingFinished.connect(_on_sizes)
         h5.addWidget(lbl_sizes); h5.addWidget(le_sizes)
         vlay.addLayout(h5)
+
+        # iterations per mode (hierarchical optimization)
+        h6 = QHBoxLayout()
+        lbl_iters = QLabel("Iterations per mode", ao_control_widget)
+        le_iters = QLineEdit(ao_control_widget)
+        default_iters = getattr(self.aoSequencer, 'optim_iterations_per_mode', [])
+        le_iters.setText(','.join(map(str, default_iters)) if default_iters else "")
+        le_iters.setPlaceholderText("e.g., 12,12,8,8,5 or leave empty for global default")
+        def _on_iters():
+            txt = le_iters.text().strip()
+            try:
+                if txt == "":
+                    iters = []
+                else:
+                    parts = [p.strip() for p in txt.replace(';', ',').split(',') if p.strip() != ""]
+                    iters = [int(p) for p in parts]
+                if self.aoSequencer is not None:
+                    self.aoSequencer.optim_iterations_per_mode = iters
+                    print(f"Iterations per mode set to: {iters}")
+            except Exception as e:
+                print(f"Error setting iterations per mode: {e}")
+        le_iters.editingFinished.connect(_on_iters)
+        h6.addWidget(lbl_iters); h6.addWidget(le_iters)
+        vlay.addLayout(h6)
+
+        # hierarchical optimization checkbox
+        h7 = QHBoxLayout()
+        lbl_hierarchical = QLabel("Use Hierarchical", ao_control_widget)
+        chk_hierarchical = QCheckBox(ao_control_widget)
+        chk_hierarchical.setChecked(False)
+        chk_hierarchical.setToolTip("Auto-set iterations based on mode importance\n"
+                                    "Order: Z4(6) → Z3,Z5(5) → Z11(4) → Z6,Z7(4) → others(default)\n"
+                                    "Balanced for both shallow and deep tissue imaging")
+        def _on_hierarchical(state):
+            try:
+                if state and self.aoSequencer is not None:
+                    # Build hierarchical iterations vector based on current modes
+                    indices_txt = le_idxs.text()
+                    parts = [p.strip() for p in indices_txt.replace(';', ',').split(',') if p.strip() != ""]
+                    modes = [int(p) for p in parts]
+
+                    # Build iterations vector using HIERARCHICAL_ITERATIONS preset
+                    iterations = []
+                    for mode in modes:
+                        mode_iters = HIERARCHICAL_ITERATIONS.get(mode, self.aoSequencer.optim_iterations)
+                        iterations.append(mode_iters)
+
+                    # Update the iterations field and sequencer
+                    le_iters.setText(','.join(map(str, iterations)))
+                    self.aoSequencer.optim_iterations_per_mode = iterations
+                    print(f"Hierarchical mode enabled - iterations set to: {iterations}")
+                elif not state:
+                    # Clear iterations when unchecked
+                    le_iters.setText("")
+                    if self.aoSequencer is not None:
+                        self.aoSequencer.optim_iterations_per_mode = []
+                    print("Hierarchical mode disabled - using global iterations")
+            except Exception as e:
+                print(f"Error toggling hierarchical mode: {e}")
+        chk_hierarchical.stateChanged.connect(_on_hierarchical)
+        h7.addWidget(lbl_hierarchical); h7.addWidget(chk_hierarchical)
+        vlay.addLayout(h7)
+
+        # convergence detection
+        h8 = QHBoxLayout()
+        lbl_convergence = QLabel("Enable Convergence Detection", ao_control_widget)
+        chk_convergence = QCheckBox(ao_control_widget)
+        chk_convergence.setChecked(False)
+        chk_convergence.setToolTip("Auto-stop when metric improvement < threshold\n"
+                                    "Saves time and reduces bleaching")
+        def _on_convergence(state):
+            try:
+                if self.aoSequencer is not None:
+                    self.aoSequencer.enable_convergence_detection = bool(state)
+                    status = "enabled" if state else "disabled"
+                    print(f"Convergence detection {status}")
+            except Exception as e:
+                print(f"Error toggling convergence detection: {e}")
+        chk_convergence.stateChanged.connect(_on_convergence)
+        h8.addWidget(lbl_convergence); h8.addWidget(chk_convergence)
+        vlay.addLayout(h8)
+
+        # convergence parameters
+        h9 = QHBoxLayout()
+        lbl_conv_params = QLabel("Convergence (threshold, window)", ao_control_widget)
+        le_conv_threshold = QLineEdit(ao_control_widget)
+        le_conv_threshold.setText("0.01")
+        le_conv_threshold.setToolTip("Relative improvement threshold (e.g., 0.01 = 1%)")
+        le_conv_threshold.setMaximumWidth(60)
+        le_conv_window = QLineEdit(ao_control_widget)
+        le_conv_window.setText("2")
+        le_conv_window.setToolTip("Number of iterations to check for improvement")
+        le_conv_window.setMaximumWidth(40)
+
+        def _on_conv_threshold():
+            try:
+                threshold = float(le_conv_threshold.text())
+                if self.aoSequencer is not None:
+                    self.aoSequencer.convergence_threshold = threshold
+                    print(f"Convergence threshold set to: {threshold}")
+            except ValueError:
+                print("Invalid convergence threshold")
+        le_conv_threshold.editingFinished.connect(_on_conv_threshold)
+
+        def _on_conv_window():
+            try:
+                window = int(le_conv_window.text())
+                if self.aoSequencer is not None:
+                    self.aoSequencer.convergence_window = window
+                    print(f"Convergence window set to: {window}")
+            except ValueError:
+                print("Invalid convergence window")
+        le_conv_window.editingFinished.connect(_on_conv_window)
+
+        h9.addWidget(lbl_conv_params)
+        h9.addWidget(le_conv_threshold)
+        h9.addWidget(le_conv_window)
+        h9.addStretch()
+        vlay.addLayout(h9)
+
+        # SPGD parameters
+        h10 = QHBoxLayout()
+        lbl_spgd = QLabel("SPGD (gain, delta, iters)", ao_control_widget)
+        le_spgd_gain = QLineEdit(ao_control_widget)
+        le_spgd_gain.setText("0.05")
+        le_spgd_gain.setToolTip("Step size for coefficient updates (typically 0.01-0.1)")
+        le_spgd_gain.setMaximumWidth(60)
+
+        le_spgd_delta = QLineEdit(ao_control_widget)
+        le_spgd_delta.setText("10")
+        le_spgd_delta.setToolTip("Perturbation size in nm (typically 5-50)")
+        le_spgd_delta.setMaximumWidth(50)
+
+        le_spgd_iters = QLineEdit(ao_control_widget)
+        le_spgd_iters.setText("100")
+        le_spgd_iters.setToolTip("Number of SPGD iterations")
+        le_spgd_iters.setMaximumWidth(60)
+
+        def _on_spgd_gain():
+            try:
+                gain = float(le_spgd_gain.text())
+                if self.aoSequencer is not None:
+                    self.aoSequencer.spgd_gain = gain
+                    print(f"SPGD gain set to: {gain}")
+            except ValueError:
+                print("Invalid SPGD gain")
+        le_spgd_gain.editingFinished.connect(_on_spgd_gain)
+
+        def _on_spgd_delta():
+            try:
+                delta = float(le_spgd_delta.text())
+                if self.aoSequencer is not None:
+                    self.aoSequencer.spgd_delta = delta
+                    print(f"SPGD delta set to: {delta}")
+            except ValueError:
+                print("Invalid SPGD delta")
+        le_spgd_delta.editingFinished.connect(_on_spgd_delta)
+
+        def _on_spgd_iters():
+            try:
+                iters = int(le_spgd_iters.text())
+                if self.aoSequencer is not None:
+                    self.aoSequencer.spgd_iterations = iters
+                    print(f"SPGD iterations set to: {iters}")
+            except ValueError:
+                print("Invalid SPGD iterations")
+        le_spgd_iters.editingFinished.connect(_on_spgd_iters)
+
+        h10.addWidget(lbl_spgd)
+        h10.addWidget(le_spgd_gain)
+        h10.addWidget(le_spgd_delta)
+        h10.addWidget(le_spgd_iters)
+        h10.addStretch()
+        vlay.addLayout(h10)
+
+        # Random search parameters
+        h11 = QHBoxLayout()
+        lbl_random = QLabel("Random Search (iters, range)", ao_control_widget)
+
+        le_random_iters = QLineEdit(ao_control_widget)
+        le_random_iters.setText("100")
+        le_random_iters.setToolTip("Number of random samples")
+        le_random_iters.setMaximumWidth(60)
+
+        le_random_range = QLineEdit(ao_control_widget)
+        le_random_range.setText("200")
+        le_random_range.setToolTip("Search range in nm (±range)")
+        le_random_range.setMaximumWidth(60)
+
+        def _on_random_iters():
+            try:
+                iters = int(le_random_iters.text())
+                if self.aoSequencer is not None:
+                    self.aoSequencer.random_search_iterations = iters
+                    print(f"Random search iterations set to: {iters}")
+            except ValueError:
+                print("Invalid random search iterations")
+        le_random_iters.editingFinished.connect(_on_random_iters)
+
+        def _on_random_range():
+            try:
+                range_val = float(le_random_range.text())
+                if self.aoSequencer is not None:
+                    self.aoSequencer.random_search_range = range_val
+                    print(f"Random search range set to: {range_val}")
+            except ValueError:
+                print("Invalid random search range")
+        le_random_range.editingFinished.connect(_on_random_range)
+
+        h11.addWidget(lbl_random)
+        h11.addWidget(le_random_iters)
+        h11.addWidget(le_random_range)
+        h11.addStretch()
+        vlay.addLayout(h11)
+
+        # Store references for callback access
+        self.le_iters = le_iters
+        self.chk_hierarchical = chk_hierarchical
 
         self.dw = self.viewer.window.add_dock_widget(ao_control_widget, name="Adaptive Optics", area='right')
         if self.dockWidgetParameter is not None:
@@ -628,6 +886,21 @@ class DMGui(BaseGUI):
         napari.run()
 
     def _updateDeviceSurface(self):
+        """
+        Update GUI visualization of DM surface.
+
+        TWO MODES OF OPERATION:
+        1. Manual mode (user adjusting GUI controls):
+           - This method updates BOTH hardware and visualization
+           - User → GUI → Hardware → Visualization
+        2. AO optimization mode (sequencer running):
+           - Sequencer already updated hardware
+           - This method's display_surface() call is redundant but harmless
+           - Sequencer → Hardware → Notification → GUI → (redundant hardware) → Visualization
+
+        The redundant hardware call in mode 2 is intentional - it keeps the code
+        simple by avoiding mode-dependent logic. Both modes use the same update path.
+        """
         self.device.display_surface()
         self.imageLayerDevice.data = self._preprocess_image(self.device.image)
 
@@ -635,7 +908,23 @@ class DMGui(BaseGUI):
         self.aoSequencer=aoSequencer
 
     def on_sequencer_update(self, params=None):
-        ''' callback from the adaptive optics sequencer when a new image is available'''
+        """
+        Callback from adaptive optics sequencer when coefficients change (AO mode).
+
+        CONTEXT: This is called ONLY during AO optimization mode.
+        During manual mode, GUI updates itself directly without this callback.
+
+        RESPONSIBILITY: Update GUI visualizations in response to sequencer updates.
+        Note: The sequencer has already updated the DM hardware before calling this.
+
+        Updates:
+        - DM surface plot (via generateDisplayImage + _updateDeviceSurface)
+        - Zernike coefficient display (via _update_zernike_display)
+        - Convergence plot is handled separately via updateAOMetrics()
+
+        The _updateDeviceSurface() call may redundantly update hardware - this is
+        intentional for code simplicity (see _updateDeviceSurface docstring).
+        """
         print("DMGui: received update from AO sequencer")
         print(f" Params: {params}")
         if params is None:
@@ -660,31 +949,82 @@ class DMGui(BaseGUI):
         self.active_aperture = self.imager.active_aperture
         self.imageLayer.data = self.imageDM
     
-    def updateAOMetrics(self,metric_values,parameter_stack):
-        ''' callback from the adaptive optics sequencer when new metric values are available'''
-        print("DMGui: received AO metrics update")
-        print(f" Metric values: {metric_values}")
-        print(f" Parameter stack: {parameter_stack}")
+    def updateAOMetrics(self, metric_values, parameter_stack=None, mode='scan', iteration=None):
+        '''
+        Callback from the adaptive optics sequencer when new metric values are available.
+
+        Parameters:
+        -----------
+        metric_values : list or array
+            Metric values to plot
+        parameter_stack : list or array, optional
+            Parameter values (for scan-based methods) or iteration numbers (for SPGD)
+        mode : str
+            'scan' for scan-based methods, 'iteration' for SPGD
+        iteration : int, optional
+            Current iteration number (for cumulative SPGD plotting)
+        '''
+        # Get verbose flag (use sequencer's verbose if available)
+        verbose = getattr(self.aoSequencer, 'verbose', False) if hasattr(self, 'aoSequencer') and self.aoSequencer else False
+        if verbose:
+            print("DMGui: received AO metrics update")
+            print(f" Mode: {mode}, Metric values: {metric_values}")
+            if parameter_stack is not None:
+                print(f" Parameter stack: {parameter_stack}")
 
         # Update the plot
         try:
-            self.ao_metric_ax.clear()
-            self.ao_metric_ax.plot(parameter_stack, metric_values, 'o-', linewidth=2, markersize=6)
-            self.ao_metric_ax.set_xlabel('Parameter value (nm)')
-            self.ao_metric_ax.set_ylabel('Metric value')
-            self.ao_metric_ax.set_title('AO Optimization Metric')
-            self.ao_metric_ax.grid(True, alpha=0.3)
+            print(f"DEBUG: updateAOMetrics called with mode={mode}, len(metric_values)={len(metric_values) if metric_values is not None else 0}")
 
-            # Highlight the maximum
-            max_idx = np.argmax(metric_values)
-            self.ao_metric_ax.plot(parameter_stack[max_idx], metric_values[max_idx],
-                                   'r*', markersize=15, label=f'Max: {metric_values[max_idx]:.2f}')
-            self.ao_metric_ax.legend()
+            if mode == 'scan':
+                # Scan-based methods: plot parameter vs metric
+                self.ao_metric_ax.clear()
+                self.ao_metric_ax.plot(parameter_stack, metric_values, 'o-', linewidth=2, markersize=6)
+                self.ao_metric_ax.set_xlabel('Parameter value (nm)')
+                self.ao_metric_ax.set_ylabel('Metric value')
+                self.ao_metric_ax.set_title('AO Optimization Metric (Scan)')
+                self.ao_metric_ax.grid(True, alpha=0.3)
+
+                # Highlight the maximum
+                max_idx = np.argmax(metric_values)
+                self.ao_metric_ax.plot(parameter_stack[max_idx], metric_values[max_idx],
+                                       'r*', markersize=15, label=f'Max: {metric_values[max_idx]:.2f}')
+                self.ao_metric_ax.legend()
+
+            elif mode == 'iteration':
+                # SPGD: cumulative plot of iterations vs metric
+                # Don't clear - accumulate points
+                if iteration is not None and len(metric_values) > 0:
+                    # Just add the latest point
+                    self.ao_metric_ax.plot([iteration], [metric_values[-1]],
+                                          'o-', color='blue', markersize=4)
+                else:
+                    # Full replot
+                    self.ao_metric_ax.clear()
+                    iterations = list(range(len(metric_values)))
+                    self.ao_metric_ax.plot(iterations, metric_values, 'o-', linewidth=2, markersize=4)
+
+                self.ao_metric_ax.set_xlabel('Iteration')
+                self.ao_metric_ax.set_ylabel('Metric value')
+                self.ao_metric_ax.set_title('AO Optimization Metric (SPGD)')
+                self.ao_metric_ax.grid(True, alpha=0.3)
+
+                # Show current best
+                if len(metric_values) > 0:
+                    best_val = max(metric_values)
+                    best_iter = metric_values.index(best_val) if hasattr(metric_values, 'index') else np.argmax(metric_values)
+                    self.ao_metric_ax.plot([best_iter], [best_val],
+                                          'r*', markersize=15, label=f'Best: {best_val:.2f}')
+                    self.ao_metric_ax.legend()
 
             self.ao_metric_figure.tight_layout()
             self.ao_metric_canvas.draw()
+            self.ao_metric_canvas.flush_events()  # Force immediate GUI update
+            print(f"DEBUG: Plot updated successfully for mode={mode}")
         except Exception as e:
             print(f"Error updating AO metrics plot: {e}")
+            import traceback
+            traceback.print_exc()
 
 
 

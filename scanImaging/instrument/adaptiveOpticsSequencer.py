@@ -3,6 +3,9 @@ from pathlib import Path
 import numpy as np
 import time
 
+# Import optimizer module
+from .ao_optimizers import SequentialOptimizer, SPGDOptimizer, RandomSearchOptimizer
+
 
 class ScannerImageProvider:
     ''' class for providing images from the scanner'''
@@ -206,32 +209,92 @@ class ScannerImageProvider:
             raise last_exception
         return None
 
-class AdaptiveOpticsSequencer(BaseSequencer):
+class AdaptiveOpticsController(BaseSequencer):
+    """
+    Adaptive Optics controller - coordinates hardware, processing, and optimization.
 
-    DEFAULT = {'name': 'AdaptiveOpticsSequencer'}
+    UPDATE FLOW ARCHITECTURE - TWO MODES OF OPERATION:
+    --------------------------------------------------
+
+    MODE 1: MANUAL CONTROL (GUI owns DM):
+    - User adjusts Zernike coefficients via GUI sliders/controls
+    - GUI updates hardware DM directly (set_phase_map_from_zernike)
+    - GUI updates its own visualizations
+    - Sequencer is NOT running
+    - Purpose: Manual exploration, testing, setup
+
+    MODE 2: AO OPTIMIZATION (Sequencer owns DM):
+    - Sequencer runs optimization algorithm
+    - At start: Reads current DM state (if use_current_dm_state=True)
+    - During optimization:
+      a) Sequencer updates hardware DM
+      b) Sequencer notifies GUI (one-way: Sequencer → GUI)
+      c) GUI updates visualizations only (but may redundantly call display_surface)
+    - GUI does NOT send updates back to hardware during optimization
+    - Purpose: Automated aberration correction
+
+    INITIALIZATION (use_current_dm_state parameter):
+    - True (default): Start optimization from current DM coefficients
+      • Preserves manual adjustments made in GUI
+      • Allows incremental optimization
+      • GUI → Sequencer handoff is seamless
+    - False: Start from zero or predefined values
+      • Clean slate optimization
+      • Useful for testing/comparison
+
+    NOTIFICATION FLOW (during AO optimization):
+    1. Sequencer updates hardware DM
+    2. Sequencer calls _notify_dependents(params={'current_coefficients': ...})
+    3. GUI.on_sequencer_update() receives notification
+    4. GUI updates visualizations:
+       - DM surface plot
+       - Zernike coefficient display
+       - Convergence plot (via separate updateAOMetrics callback)
+    5. GUI may call display_surface() again (redundant but harmless)
+
+    WHY "REDUNDANT" UPDATES EXIST:
+    - GUI needs hardware update capability for MODE 1 (manual control)
+    - Sequencer needs hardware update capability for MODE 2 (optimization)
+    - Both may call display_surface() - this overlap is intentional
+    - During optimization, GUI's hardware calls are redundant but harmless
+    - Alternative would be complex mode locking - current design is simpler
+
+    KEY PRINCIPLE:
+    - Manual mode: GUI controls hardware
+    - Optimization mode: Sequencer controls hardware, GUI follows
+    - Transition: use_current_dm_state enables smooth handoff between modes
+    """
+
+    DEFAULT = {'name': 'AdaptiveOpticsController'}
 
     def __init__(self,viscope=None, name=None, **kwargs):
         ''' initialisation '''
 
-        if name== None: name= AdaptiveOpticsSequencer.DEFAULT['name']
+        if name== None: name= AdaptiveOpticsController.DEFAULT['name']
         super().__init__(name=name, **kwargs)
         self.viscope=viscope
         # devices
         self.deformable_mirror = None
         self.image_provider = None
         self.dm_display = None
+
+        # NEW: Optional image processing and z-scanning support
+        self.image_processor = kwargs.get('image_processor', None)  # ISM/FLIM processing pipeline
+        self.z_stage = kwargs.get('z_stage', None)                  # z-stage for volume imaging
+        self.current_z = None                                        # current z-position
         self.recorded_image_folder= "Data/AdaptiveOptics"
         self.optim_iterations=3
+        self.optim_iterations_per_mode=[]  # Per-mode iterations (empty = use optim_iterations for all)
         self.optim_method='simple_interpolation'  # other methods can be implemented
-        self.initial_zernike_indices=[4,5,6]  # defocus, astigmatism, spherical
-        self.zernike_initial_coefficients_nm=[0,0,0]
-        self.zernike_amplitude_scan_nm=[20,15,10]
+        self.initial_zernike_indices=[4,3,5,11,6,7]  # Hierarchical order: defocus, astigmatism, spherical, coma
+        self.zernike_initial_coefficients_nm=[0,0,0,0,0,0]  # Start at zero (or use Gibson-Lanni for Z11)
+        self.zernike_amplitude_scan_nm=[80,60,60,200,50,50]  # Conservative step sizes (10-200 nm range)
         self.num_steps_per_mode=3
         self.imageSet=[]
         self._dependents = []
         self.continuous_scan=False
         self.image_log=False
-        self.print_plot=False
+        self.print_plot=True
         self.parameter_stack=None
         self.metric_values=None
         self.use_current_dm_state=True  # Initialize from current DM coefficients (default: preserve existing state)
@@ -244,10 +307,24 @@ class AdaptiveOpticsSequencer(BaseSequencer):
         self.scanner_timeout = 30  # seconds (reduced from 120s for faster feedback)
         self.scanner_max_retries = 5  # number of retry attempts on timeout
         self.scanner_enable_health_check = False  # OFF by default to avoid bleaching
-        self.scanner_enable_auto_restart = True  # automatically restart scanner on failure
+        self.scanner_enable_auto_restart = False  # automatically restart scanner on failure
 
         # Loop control and cleanup
         self._stop_requested = False  # Flag to signal loop to exit cleanly
+
+        # Convergence detection
+        self.enable_convergence_detection = False  # Enable auto-stop when converged
+        self.convergence_threshold = 0.01  # Relative improvement threshold (1%)
+        self.convergence_window = 2  # Number of iterations to check for convergence
+
+        # SPGD parameters
+        self.spgd_gain = 0.05  # Step size for coefficient updates (tune this!)
+        self.spgd_delta = 10.0  # Perturbation size in nm (typically 10-50 nm)
+        self.spgd_iterations = 100  # Number of SPGD iterations
+
+        # Random search parameters
+        self.random_search_iterations = 100  # Number of random samples to try
+        self.random_search_range = 200.0  # Search range in nm (±range around initial)
 
         # Optimization metrics
         self.selected_metric='laplacian_variance'
@@ -367,9 +444,64 @@ class AdaptiveOpticsSequencer(BaseSequencer):
         if self.verbose:
             print(f"AO Sequencer: notifying {len(self._dependents)} dependent(s)")
         for d in list(self._dependents):
-            d.on_sequencer_update( params=params)
-            if hasattr(d, 'updateAOMetrics') and self.parameter_stack is not None and self.metric_values is not None:
-                d.updateAOMetrics(self.metric_values,self.parameter_stack)
+            d.on_sequencer_update(params=params)
+            # Call updateAOMetrics if available
+            if hasattr(d, 'updateAOMetrics'):
+                # Check if we have iteration-based data (SPGD, random_search) or scan-based data
+                if params and 'spgd_metric_history' in params:
+                    # SPGD iteration-based updates
+                    metric_history = params['spgd_metric_history']
+                    iteration = params.get('iteration', len(metric_history)-1)
+                    d.updateAOMetrics(metric_history, mode='iteration', iteration=iteration)
+                elif params and 'random_search_metric_history' in params:
+                    # Random search iteration-based updates
+                    metric_history = params['random_search_metric_history']
+                    iteration = params.get('iteration', len(metric_history)-1)
+                    d.updateAOMetrics(metric_history, mode='iteration', iteration=iteration)
+                elif self.parameter_stack is not None and self.metric_values is not None:
+                    # Scan-based methods (simple_interpolation, weighted_fit)
+                    d.updateAOMetrics(self.metric_values, self.parameter_stack, mode='scan')
+
+    def _update_dm_and_notify(self, coefficients, **extra_params):
+        """
+        Apply coefficients to DM hardware and notify GUI (standard pattern).
+
+        This is the STANDARD PATTERN for all DM updates in optimization algorithms.
+        Every DM update triggers a GUI notification to keep visualizations synchronized.
+
+        Parameters:
+        -----------
+        coefficients : array-like
+            Zernike coefficients to apply to DM
+        **extra_params : dict
+            Additional parameters to include in notification (e.g., iteration, metric)
+
+        Usage Examples:
+        ---------------
+        # Simple update:
+        self._update_dm_and_notify(coeffs)
+
+        # With iteration info (for SPGD, random_search):
+        self._update_dm_and_notify(coeffs, iteration=42, metric=123.4,
+                                    spgd_metric_history=[...])
+
+        # With scan info (for scan-based methods):
+        self._update_dm_and_notify(coeffs, zernike_index=4, scan_value=50.0)
+        """
+        # Update DM hardware
+        self.deformable_mirror.set_phase_map_from_zernike(coefficients)
+        self.deformable_mirror.display_surface()
+
+        # Build notification parameters
+        params = {'current_coefficients': coefficients.copy()}
+        params.update(extra_params)
+
+        # Notify GUI and other dependents
+        try:
+            self._notify_dependents(params=params)
+        except Exception as e:
+            if self.verbose:
+                print(f"Error notifying dependents: {e}")
 
     # --- Save/Load Coefficients ---
     def save_coefficients(self, filepath):
@@ -514,6 +646,164 @@ class AdaptiveOpticsSequencer(BaseSequencer):
         self.metric_values=metric_values
         return optimal_parameter,miss_max,metric_values[max_index]
 
+    def computeOptimalParametersWeightedFit(self, image_stack, parameter_stack, optim_metric, plot=False):
+        """
+        Compute optimal parameter using ALL scan points with Poisson weighting.
+
+        More robust to noise than 3-point interpolation by using all measured data.
+        Poisson weighting: w ∝ √metric (since variance ∝ mean for Poisson noise).
+
+        Parameters:
+        -----------
+        image_stack : list of images
+            All acquired images during parameter scan
+        parameter_stack : array-like
+            Corresponding parameter values
+        optim_metric : callable
+            Function to compute image quality metric
+        plot : bool
+            If True, save diagnostic plot
+
+        Returns:
+        --------
+        optimal_parameter : float
+            Estimated optimal parameter value
+        miss_max : int
+            -1 if optimum below scan range, +1 if above, 0 if within
+        optimal_metric : float
+            Predicted metric value at optimum (or best measured if parabola invalid)
+        """
+        if len(image_stack) == 0 or len(parameter_stack) == 0:
+            raise ValueError("Image stack and parameter stack must have non-zero length.")
+        if len(image_stack) != len(parameter_stack):
+            raise ValueError("Image stack and parameter stack must have the same length.")
+
+        # Compute metric for each image
+        metric_values = np.array([optim_metric(img) for img in image_stack])
+        if self.verbose:
+            print(f"Metric values (weighted fit): {metric_values}")
+
+        # Poisson weighting: weight ∝ √metric (variance ∝ mean)
+        # Add small epsilon to avoid division by zero
+        weights = np.sqrt(np.maximum(metric_values, 1e-12))
+
+        # Fit quadratic to ALL points with weights
+        try:
+            coeffs = np.polyfit(parameter_stack, metric_values, deg=2, w=weights)
+            a, b, c = coeffs
+        except Exception as e:
+            if self.verbose:
+                print(f"Polynomial fit failed: {e}, falling back to best measured point")
+            max_idx = np.argmax(metric_values)
+            return parameter_stack[max_idx], 0, metric_values[max_idx]
+
+        # Check if parabola opens downward (concave) - required for maximum
+        if a >= 0:
+            # Not a maximum - parabola opens upward or is flat
+            if self.verbose:
+                print(f"Parabola opens upward (a={a:.2e}), using best measured point")
+            max_idx = np.argmax(metric_values)
+            return parameter_stack[max_idx], 0, metric_values[max_idx]
+
+        # Compute vertex of parabola: x = -b / (2a)
+        optimal_parameter = -b / (2 * a)
+
+        # Check if optimum is within scan range
+        miss_max = 0
+        min_param = np.min(parameter_stack)
+        max_param = np.max(parameter_stack)
+
+        if optimal_parameter < min_param:
+            miss_max = -1
+            if self.verbose:
+                print(f"Optimum below scan range: {optimal_parameter:.2f} < {min_param:.2f}")
+        elif optimal_parameter > max_param:
+            miss_max = 1
+            if self.verbose:
+                print(f"Optimum above scan range: {optimal_parameter:.2f} > {max_param:.2f}")
+
+        # Predicted optimal metric value at vertex
+        optimal_metric = a * optimal_parameter**2 + b * optimal_parameter + c
+
+        # Diagnostic plot if requested
+        if plot:
+            import matplotlib.pyplot as plt
+            plt.figure(figsize=(10, 6))
+
+            # Measured points
+            plt.scatter(parameter_stack, metric_values, c='blue', s=100,
+                       alpha=0.6, label='Measured')
+
+            # Fitted parabola
+            param_fine = np.linspace(min_param, max_param, 200)
+            metric_fine = a * param_fine**2 + b * param_fine + c
+            plt.plot(param_fine, metric_fine, 'r--', linewidth=2,
+                    label='Weighted fit')
+
+            # Optimal point
+            plt.scatter([optimal_parameter], [optimal_metric], c='red', s=200,
+                       marker='*', edgecolors='black', linewidth=2,
+                       label=f'Optimum: {optimal_parameter:.2f}')
+
+            plt.xlabel('Parameter value', fontsize=12)
+            plt.ylabel('Metric value', fontsize=12)
+            plt.title('All-Points Weighted Fit (Poisson weighting)', fontsize=14)
+            plt.legend(fontsize=10)
+            plt.grid(True, alpha=0.3)
+            plt.savefig('optimization_weighted_fit.png', dpi=150, bbox_inches='tight')
+            plt.close()
+
+        # Store for diagnostics
+        self.parameter_stack = parameter_stack
+        self.metric_values = metric_values
+
+        return optimal_parameter, miss_max, optimal_metric
+
+    def loop_SPGD(self):
+        """
+        SPGD (Stochastic Parallel Gradient Descent) optimization loop.
+
+        Delegates to modular SPGDOptimizer implementation.
+        """
+        # Initialize coefficients
+        initial_coefficients_full = self._initialize_coefficients()
+
+        # Create and initialize optimizer
+        optimizer = SPGDOptimizer(self)
+        optimizer.initialize(
+            initial_coefficients=initial_coefficients_full,
+            zernike_indices=self.initial_zernike_indices
+        )
+
+        # Run optimization (yields for GUI updates)
+        yield from optimizer.run()
+
+        # Store final results
+        results = optimizer.get_results()
+        self.final_coefficients = results['final_coefficients']
+
+    def loop_random_search(self):
+        """
+        Random search baseline optimization.
+
+        Delegates to modular RandomSearchOptimizer implementation.
+        """
+        # Initialize coefficients
+        initial_coefficients_full = self._initialize_coefficients()
+
+        # Create and initialize optimizer
+        optimizer = RandomSearchOptimizer(self)
+        optimizer.initialize(
+            initial_coefficients=initial_coefficients_full,
+            zernike_indices=self.initial_zernike_indices
+        )
+
+        # Run optimization (yields for GUI updates)
+        yield from optimizer.run()
+
+        # Store final results
+        results = optimizer.get_results()
+        self.final_coefficients = results['final_coefficients']
 
 
     def start(self):
@@ -611,26 +901,142 @@ class AdaptiveOpticsSequencer(BaseSequencer):
             initial_coefficients_full[zernike_index] = self.zernike_initial_coefficients_nm[idx]
         return initial_coefficients_full
 
-    def _updateImageAndDM(self,current_coefficients,zernike_index,val):
-        self.deformable_mirror.set_phase_map_from_zernike(current_coefficients)
-        # notify dependents about intermediate scan image/state
-        try:
-            self._notify_dependents( params={
-                'current_coefficients': current_coefficients.copy(),
-                'zernike_index': zernike_index,
-                'scan_value': val
-            })
-        except Exception as e:
-            print("Error notifying dependents during scan:", e)
-            pass
-        self.deformable_mirror.display_surface()
-        # wait a bit for the system to stabilize
-        time.sleep(0.1)
-        image = self.image_provider.getImage()
-        return image
+    def acquire_and_process_image(self):
+        """
+        Acquire image with optional processing pipeline.
 
-    def loop(self):
-        ''' main loop of the sequencer '''
+        If image_processor is provided (ISM, FLIM, etc.), applies processing
+        and returns processed image. Otherwise returns raw image.
+
+        Returns:
+            numpy.ndarray: Image for AO metric computation
+        """
+        # Acquire raw data
+        raw_data = self.image_provider.getImage()
+
+        # Apply processing if available
+        if self.image_processor is not None:
+            try:
+                processed = self.image_processor.process(raw_data)
+
+                # Update display with additional data (ISM, FLIM layers)
+                if hasattr(self, '_update_multimodal_display'):
+                    self._update_multimodal_display(processed)
+
+                # Return processed image for metric computation
+                return processed.get('image', raw_data)
+
+            except Exception as e:
+                if self.verbose:
+                    print(f"Warning: Image processing failed: {e}")
+                    print("Falling back to raw image")
+                return raw_data
+        else:
+            # No processing: return raw image
+            return raw_data
+
+    def _update_multimodal_display(self, processed_data):
+        """
+        Update display with multi-modal data (ISM, FLIM).
+
+        Override this method or implement in GUI integration for full functionality.
+
+        Args:
+            processed_data: Dict with keys like 'image', 'ism_enhanced', 'lifetime', etc.
+        """
+        # Placeholder - implement when ISM/FLIM modules added
+        pass
+
+    def _updateImageAndDM(self, current_coefficients, zernike_index, val):
+        """
+        Update DM, notify, wait, and acquire image.
+
+        Used by scan-based methods (simple_interpolation, weighted_fit).
+        Combines the most common sequence: DM update -> notify -> wait -> acquire.
+        """
+        # Use helper for DM update + notification
+        self._update_dm_and_notify(current_coefficients,
+                                    zernike_index=zernike_index,
+                                    scan_value=val)
+
+        # Wait for stabilization and acquire image with optional processing
+        time.sleep(0.1)
+        return self.acquire_and_process_image()
+
+    def _build_iterations_dict(self):
+        """Build dictionary mapping Zernike mode → number of iterations
+
+        Uses optim_iterations_per_mode vector if provided, otherwise falls back
+        to scalar optim_iterations for all modes.
+
+        Returns:
+            dict: {mode: iterations} for each mode in initial_zernike_indices
+        """
+        modes = self.initial_zernike_indices
+        iterations_vector = self.optim_iterations_per_mode
+
+        # If no per-mode iterations specified, use global default for all
+        if not iterations_vector or len(iterations_vector) == 0:
+            return {mode: self.optim_iterations for mode in modes}
+
+        # Warn if vector is longer than needed
+        if len(iterations_vector) > len(modes):
+            if self.verbose:
+                print(f"Warning: optim_iterations_per_mode has {len(iterations_vector)} values but only {len(modes)} modes. Extra values will be ignored.")
+
+        # Extend vector with default if too short
+        if len(iterations_vector) < len(modes):
+            if self.verbose:
+                print(f"Note: optim_iterations_per_mode has {len(iterations_vector)} values for {len(modes)} modes. Extending with default value {self.optim_iterations}.")
+            iterations_vector = list(iterations_vector) + [self.optim_iterations] * (len(modes) - len(iterations_vector))
+
+        # Build dictionary
+        return {mode: int(iters) for mode, iters in zip(modes, iterations_vector)}
+
+    def loop_scan_based_modular(self):
+        """
+        Sequential scan-based optimization using modular optimizer architecture.
+
+        This is the new implementation that delegates to SequentialOptimizer.
+        """
+        if self.verbose:
+            print("Starting Adaptive Optics Sequencer Loop (Modular Optimizer)")
+            print(f"Optimizing indices: {self.initial_zernike_indices} with initial coefficients (nm): {self.zernike_initial_coefficients_nm} and scan amplitudes (nm): {self.zernike_amplitude_scan_nm}")
+            print(f"Using metric: {self.selected_metric}")
+
+        # Initialize coefficients
+        initial_coefficients_full = self._initialize_coefficients()
+
+        # Create and initialize optimizer
+        optimizer = SequentialOptimizer(self)
+        optimizer.initialize(
+            initial_coefficients=initial_coefficients_full,
+            zernike_indices=self.initial_zernike_indices,
+            scan_amplitudes=self.zernike_amplitude_scan_nm
+        )
+
+        # Run optimization (yields for GUI updates)
+        yield from optimizer.run()
+
+        # Store final results
+        results = optimizer.get_results()
+        self.final_coefficients = results['final_coefficients']
+
+        if self.verbose:
+            print(f"Optimization complete. Final coefficients: {self.final_coefficients[:min(12, len(self.final_coefficients))]}")
+
+    def loop_scan_based(self):
+        """
+        Sequential scan-based optimization (simple_interpolation or weighted_fit).
+
+        Delegates to modular optimizer implementation (SequentialOptimizer).
+        The legacy implementation is preserved in loop_scan_based_legacy() for reference.
+        """
+        # Use modular implementation
+        yield from self.loop_scan_based_modular()
+        return
+
+        # LEGACY IMPLEMENTATION BELOW (unreachable, kept for reference)
         if self.verbose:
             print("Starting Adaptive Optics Sequencer Loop")
             print(f"Optimizing indices: {self.initial_zernike_indices} with initial coefficients (nm): {self.zernike_initial_coefficients_nm} and scan amplitudes (nm): {self.zernike_amplitude_scan_nm}")
@@ -650,11 +1056,29 @@ class AdaptiveOpticsSequencer(BaseSequencer):
         if self.continuous_scan:
             self.image_provider.startContinuousMode()
         current_coefficients = initial_coefficients_full.copy()
+
+        # Build per-mode iteration counts (hierarchical optimization)
+        iterations_dict = self._build_iterations_dict()
+        if self.verbose and self.optim_iterations_per_mode:
+            print(f"Using per-mode iterations: {iterations_dict}")
+
         try:
-            ''' finite loop of the sequence'''
-            for ii in range(self.optim_iterations):
-                # loop over each zernike mode
-                for mode_idx, zernike_index in enumerate(self.initial_zernike_indices):
+            ''' finite loop of the sequence - hierarchical optimization'''
+            # Loop over each zernike mode (outer loop)
+            for mode_idx, zernike_index in enumerate(self.initial_zernike_indices):
+                mode_iterations = iterations_dict.get(zernike_index, self.optim_iterations)
+                if self.verbose:
+                    print(f"\n=== Optimizing mode {zernike_index} with {mode_iterations} iterations ===")
+
+                # Initialize convergence tracking for this mode
+                metric_history = []
+
+                # Initialize accumulated data for weighted_fit algorithm
+                accumulated_images = []
+                accumulated_params = []
+
+                # Optimize this mode for the specified number of iterations (inner loop)
+                for ii in range(mode_iterations):
                     # prepare scan parameters
                     scan_amplitude = self.zernike_amplitude_scan_nm[mode_idx]
                     num_scan_points=self.num_steps_per_mode
@@ -673,12 +1097,30 @@ class AdaptiveOpticsSequencer(BaseSequencer):
                             if self.verbose:
                                 print("Stop requested - exiting AO loop")
                             return  # Exit early, finally block will still execute
+                    # Accumulate data for weighted_fit (across all iterations for this mode)
+                    if self.optim_method == 'weighted_fit':
+                        accumulated_images.extend(image_stack)
+                        accumulated_params.extend(parameter_stack)
+
                     miss_max=1
                     while num_scan_points<100 and abs(miss_max)!=0:
-                        # compute optimal parameter for this mode
+                        # compute optimal parameter for this mode using selected algorithm
                         metric_fn = self.get_metric_function()
-                        optimal_value,miss_max,opt_v = self.computeOptimalParametersSimpleInterpolation(
-                            image_stack, parameter_stack, optim_metric=metric_fn, plot=self.print_plot)
+
+                        # Select optimization algorithm
+                        if self.optim_method == 'weighted_fit':
+                            # Use accumulated data across all iterations for this mode
+                            optimal_value, miss_max, opt_v = self.computeOptimalParametersWeightedFit(
+                                accumulated_images, accumulated_params, optim_metric=metric_fn, plot=self.print_plot)
+                            # For weighted_fit, use accumulated_params for range checking
+                            range_check_params = accumulated_params
+                        else:  # Default: 'simple_interpolation'
+                            # Use only current scan data
+                            optimal_value, miss_max, opt_v = self.computeOptimalParametersSimpleInterpolation(
+                                image_stack, parameter_stack, optim_metric=metric_fn, plot=self.print_plot)
+                            # For simple_interpolation, use current scan data
+                            range_check_params = parameter_stack
+
                         if miss_max != 0:
                             num_scan_points+=1
                             scan_amplitude *=1.2
@@ -686,14 +1128,14 @@ class AdaptiveOpticsSequencer(BaseSequencer):
                             scan_amplitude *= 0.7
                         added_value=None
                         if miss_max<0:
-                            added_value=parameter_stack[0]-scan_amplitude/2
-                            if optimal_value<parameter_stack[0]:
+                            added_value=range_check_params[0]-scan_amplitude/2
+                            if optimal_value<range_check_params[0]:
                                 added_value=optimal_value - scan_amplitude/2
                             #append at the beginning
                             parameter_stack=[added_value]+parameter_stack
                         if miss_max>0:
-                            added_value=parameter_stack[-1]+scan_amplitude/2
-                            if optimal_value>parameter_stack[-1]:
+                            added_value=range_check_params[-1]+scan_amplitude/2
+                            if optimal_value>range_check_params[-1]:
                                 added_value=optimal_value + scan_amplitude/2
                             # append at the end
                             parameter_stack=parameter_stack+[added_value]
@@ -702,6 +1144,14 @@ class AdaptiveOpticsSequencer(BaseSequencer):
                             # acquire image
                             image=self._updateImageAndDM(current_coefficients=current_coefficients,zernike_index=zernike_index,val=added_value)
                             image_stack=[image]+image_stack if miss_max<0 else image_stack+[image]
+                            # Also accumulate this additional point for weighted_fit
+                            if self.optim_method == 'weighted_fit':
+                                if miss_max < 0:
+                                    accumulated_images.insert(0, image)
+                                    accumulated_params.insert(0, added_value)
+                                else:
+                                    accumulated_images.append(image)
+                                    accumulated_params.append(added_value)
                             yield  # yield to allow interruption
                             if self._stop_requested:
                                 if self.verbose:
@@ -712,15 +1162,30 @@ class AdaptiveOpticsSequencer(BaseSequencer):
                     current_coefficients[zernike_index] = optimal_value
                     self.deformable_mirror.set_phase_map_from_zernike(current_coefficients)
                     self.deformable_mirror.display_surface()
-                    # notify dependents about updated coefficients after optimization of this mode
+                    # notify dependents about updated coefficients AND convergence plot
                     try:
-                        self._notify_dependents(image=None, params={'coefficients': initial_coefficients_full.copy()})
+                        # This triggers both DM surface update and convergence plot update
+                        self._notify_dependents(params={'coefficients': initial_coefficients_full.copy()})
                     except Exception:
                         pass
                     if self.verbose:
-                        print(f"Optimized Zernike index {zernike_index} to value {optimal_value} nm")
+                        print(f"Optimized Zernike index {zernike_index} to value {optimal_value} nm (iteration {ii+1}/{mode_iterations}), metric={opt_v:.4f}")
 
-                image = self.image_provider.getImage()
+                    # Convergence detection
+                    metric_history.append(opt_v)
+                    if self.enable_convergence_detection and len(metric_history) >= self.convergence_window + 1:
+                        # Check relative improvement over convergence_window
+                        recent_metrics = metric_history[-self.convergence_window-1:]
+                        relative_improvement = (recent_metrics[-1] - recent_metrics[0]) / (abs(recent_metrics[0]) + 1e-12)
+
+                        if relative_improvement < self.convergence_threshold:
+                            if self.verbose:
+                                print(f"Converged! Improvement {relative_improvement:.4f} < threshold {self.convergence_threshold:.4f}")
+                                print(f"Stopping after {ii+1}/{mode_iterations} iterations for mode {zernike_index}")
+                            break  # Exit inner loop (iterations for this mode)
+
+                # After completing all iterations for this mode, get final image
+                image = self.acquire_and_process_image()
                 imageSet.append(image)
                 parameter_set.append(initial_coefficients_full.copy())
                 opt_v_set.append(opt_v)
@@ -729,7 +1194,7 @@ class AdaptiveOpticsSequencer(BaseSequencer):
                     self._notify_dependents(params={'final_coefficients': initial_coefficients_full.copy()})
                 except Exception as e:
                     if self.verbose:
-                        print("Error notifying dependents after iteration:", e)
+                        print("Error notifying dependents after mode optimization:", e)
                     pass
 
             # Save final optimized coefficients to instance variable
@@ -748,6 +1213,34 @@ class AdaptiveOpticsSequencer(BaseSequencer):
                 if self.verbose:
                     print("Stopping continuous acquisition mode...")
                 self.image_provider.stopContinuousMode()
+
+    def loop(self):
+        """
+        Main optimization loop - routes to selected algorithm.
+
+        Delegates to specialized methods based on self.optim_method:
+        - 'spgd': Stochastic Parallel Gradient Descent (simultaneous optimization)
+        - 'random_search': Random sampling baseline
+        - 'simple_interpolation' or 'weighted_fit': Sequential scan-based optimization
+        """
+        if self.optim_method == 'spgd':
+            if self.verbose:
+                print("Using SPGD optimization method")
+            yield from self.loop_SPGD()
+        elif self.optim_method == 'random_search':
+            if self.verbose:
+                print("Using Random Search optimization method")
+            yield from self.loop_random_search()
+        elif self.optim_method in ['simple_interpolation', 'weighted_fit']:
+            if self.verbose:
+                print(f"Using {self.optim_method} optimization method")
+            yield from self.loop_scan_based()
+        else:
+            raise ValueError(f"Unknown optimization method: {self.optim_method}")
+
+
+# Backward compatibility alias
+AdaptiveOpticsSequencer = AdaptiveOpticsController
 
 
 if __name__ == "__main__":
