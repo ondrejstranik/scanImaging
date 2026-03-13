@@ -359,9 +359,9 @@ class FakeNIDaqTaskFactory:
 
 specs_unidirectional={"rate":200000,
     "fov_voltage":1.5,
-    "pixels_x":512,
-    "pixels_y":512,
-    "line_rate":250,  # 100 lines per second
+    "pixels_x":100,
+    "pixels_y":100,
+    "line_rate":200,  # 100 lines per second
     "flyback_frac":0.7,
     "flyback_frame_frac":1.0/512,
     "bidirectional":False,
@@ -659,8 +659,8 @@ def show_image(img_data):
 # ----------------------------
 def run():
     ai_vmin, ai_vmax = 0.0, 10.0  # DET36A/M output range into high-Z
-    ao_data, do_data, scan_layout = setup_and_check_pattern(specs_bidirectional)
-    rate=int(specs_bidirectional["rate"])
+    ao_data, do_data, scan_layout = setup_and_check_pattern(specs_unidirectional)
+    rate=int(specs_unidirectional["rate"])
     total_scan_samples = ao_data.shape[0]
     if total_scan_samples!= do_data.shape[0]:
         raise RuntimeError("No match of scan and trigger samples!")
@@ -670,7 +670,7 @@ def run():
     image_queue = queue.Queue(maxsize=3)
     display=Display()
     display.initialize_display(specs_bidirectional)
-    tasksfactory=NIDaqTaskFactory()
+    tasksfactory=FakeNIDaqTaskFactory()
     tasksfactory.set_rate(rate)
     ao_task=tasksfactory.create_ao_wrapper(total_scan_samples)
     do_task=tasksfactory.create_do_wrapper(total_scan_samples)
