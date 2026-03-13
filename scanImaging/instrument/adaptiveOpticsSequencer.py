@@ -12,10 +12,10 @@ class ScannerImageProvider:
     ''' class for providing images from the scanner'''
 
     def __init__(self, scanner=None, processor=None,
-                 timeout=30,              # Reduced from 120s
-                 max_retries=3,           # New: retry on timeout
-                 enable_health_check=False,  # New: configurable (OFF by default)
-                 enable_auto_restart=True):  # New: auto-restart on failure
+                 timeout=30,
+                 max_retries=3,
+                 enable_health_check=False, 
+                 enable_auto_restart=False):
         self.scanner_device = scanner
         self.processor = processor
         self.timeout_seconds = timeout
