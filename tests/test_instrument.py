@@ -2,6 +2,7 @@
 
 import pytest
 
+@pytest.mark.GUI
 def test_bHScanner():
     ''' check the data are generated'''
     from scanImaging.instrument.bHScanner import BHScanner
@@ -21,6 +22,7 @@ def test_bHScanner():
     bhScanner.disconnect()
 
 
+@pytest.mark.GUI
 def test_bHScanner2():
     ''' check the scanner data are processed live '''
     from scanImaging.instrument.bHScanner.bHScanner   import BHScanner
@@ -53,6 +55,7 @@ def test_bHScanner2():
     bhScanner.disconnect()
 
 
+@pytest.mark.GUI
 def test_bHScanner3():
     ''' check the scanner data are processed live  - check just live imag'''
     from scanImaging.instrument.bHScanner.bHScanner   import BHScanner

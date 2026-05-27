@@ -5,6 +5,11 @@
 import time
 import threading
 import queue
+import sys
+import select
+import termios
+import tty
+import datetime
 import numpy as np
 from collections import deque
 from safe_scan_pattern import print_pattern_metrics, safe_scan_pattern, stop_outputs,check_if_exceeds_limits
@@ -197,7 +202,13 @@ class FakeGalvoAoWrapper:
 
 
 class FakeAiWrapper:
-    def __init__(self):
+    def __init__(self, image_type='resolution_target', n_gridlines=10,
+                 randomize_lag=False, lag_range=10):
+        self.image_type = image_type
+        self.n_gridlines = n_gridlines
+        self.randomize_lag = randomize_lag
+        self.lag_range = lag_range
+        self._true_lag = None
         self.line_length=10000
         self.bidirectional=True
         self.line_flyback=10
@@ -218,14 +229,31 @@ class FakeAiWrapper:
         self.sample_size=scan_layout["pattern_size"]
         self.rate=scan_layout["rate"]
 
-        # Store timing compensation parameters for lag simulation
+        # Timing compensation parameters for lag simulation
         self.scanner_lag = scan_layout.get("scanner_lag_samples", 0)
         self.scanner_lag_even = scan_layout.get("scanner_lag_samples_even", 0)
         self.scanner_lag_odd = scan_layout.get("scanner_lag_samples_odd", 0)
 
+        if self.randomize_lag:
+            rng = np.random.default_rng()
+            r = self.lag_range
+            self.scanner_lag      = int(rng.integers(-r, r + 1))
+            self.scanner_lag_even = int(rng.integers(-r, r + 1))
+            self.scanner_lag_odd  = int(rng.integers(-r, r + 1))
+            print(f"FakeAiWrapper: random lag applied (hidden). Range ±{r} samples.")
+
+        self._true_lag = {
+            "scanner_lag_samples":      self.scanner_lag,
+            "scanner_lag_samples_even": self.scanner_lag_even,
+            "scanner_lag_samples_odd":  self.scanner_lag_odd,
+        }
         self._set_image()
 
-    def _set_image(self):
+    def reveal_true_lag(self):
+        """Return the simulated lag values (ground truth for calibration checks)."""
+        return dict(self._true_lag) if self._true_lag is not None else None
+
+    def _make_resolution_target(self):
         from PIL import Image
         from pathlib import Path
         base_path = Path(__file__).resolve().parent
@@ -235,8 +263,23 @@ class FakeAiWrapper:
         arr = np.asarray(img, dtype=np.float32)
         if arr.max() != 0:
             arr /= arr.max()
-#        arr*=0.0
-#        arr[:,len(arr)//2-10:len(arr)//2+10]=1.0
+        return arr
+
+    def _make_grid(self):
+        arr = np.zeros((self.nLines, self.line_length), dtype=np.float32)
+        x_step = max(1, self.line_length // self.n_gridlines)
+        y_step = max(1, self.nLines // self.n_gridlines)
+        for x in range(0, self.line_length, x_step):
+            arr[:, x] = 1.0
+        for y in range(0, self.nLines, y_step):
+            arr[y, :] = 1.0
+        return arr
+
+    def _set_image(self):
+        if self.image_type == 'grid':
+            arr = self._make_grid()
+        else:
+            arr = self._make_resolution_target()
         self.image=arr
 
         # Apply bidirectional reversal
@@ -326,14 +369,18 @@ class FakeDoWrapper:
 # The AO task defines the sample clock and therefore it has to be generated first, but started last.
 # Only if the AO task start the sample clock, the other tasks will start.
 class FakeNIDaqTaskFactory:
-    def __init__(self, device="Dev1"):
+    def __init__(self, device="Dev1", image_type='resolution_target',
+                 randomize_lag=False, lag_range=10):
         self.nidaqmx = None
         self.device = device
+        self.image_type = image_type
+        self.randomize_lag = randomize_lag
+        self.lag_range = lag_range
         self._sample_clock = None
         self._ao_task = None
         self.device_voltage_range=10.0
-        self.device_max_sample_rate=250000 
-        self.device_sample_rate=200000 
+        self.device_max_sample_rate=250000
+        self.device_sample_rate=200000
         self.ao_channels="ao0:1"
         self.do_port="port0/line0:2"
         self.ai_channel="ai0"
@@ -350,7 +397,9 @@ class FakeNIDaqTaskFactory:
         return FakeDoWrapper()
 
     def create_ai_wrapper(self, ai_vmin,ai_vmax,samps_per_chan):
-        return FakeAiWrapper()
+        return FakeAiWrapper(image_type=self.image_type,
+                             randomize_lag=self.randomize_lag,
+                             lag_range=self.lag_range)
 
 
 
@@ -498,18 +547,22 @@ def consume_from_fifo(fifo,n):
     return np.asarray(out, dtype=np.float32)
 
 # Do not call ai_task.start() since thread handling is non-deterministic.
-def detector_thread(ai_task,scan_layout,stop_event,image_queue, pattern_specs=specs_bidirectional):
+def detector_thread(ai_task, scan_layout, stop_event, image_queue,
+                    pattern_specs=specs_bidirectional,
+                    shared_params=None, params_lock=None,
+                    raw_frame_holder=None):
     nx=pattern_specs["pixels_x"]
     ny=pattern_specs["pixels_y"]
     bidirectional=pattern_specs["bidirectional"]
     max_line_samples=scan_layout["max_line_samples"]
     line_idx = 0
     frame = np.zeros((ny, nx), dtype=np.float32)
-    blocking=max_line_samples//nx #samples per pixel, rounded down. 
+    blocking=max_line_samples//nx #samples per pixel, rounded down.
     if blocking <= 0:
         raise RuntimeError("Invalid blocking factor: increase sampling rate or reduce pixels_x.")
     if max_line_samples % nx != 0:
         print("Warning: pixel binning truncates samples")
+    raw_line_buf = np.zeros((ny, max_line_samples), dtype=np.float32) if raw_frame_holder is not None else None
     # add a software fifo
     fifo=deque()
     READ_CHUNK=4096
@@ -517,40 +570,60 @@ def detector_thread(ai_task,scan_layout,stop_event,image_queue, pattern_specs=sp
     while not stop_event.is_set():
         samples_per_read = scan_layout["complete_line_samples"][line_idx]
         line_samples=scan_layout["line_samples"][line_idx]
-        while len(fifo)<samples_per_read:
+        # 1) Read offset first so we know how much to buffer
+        if shared_params is not None and params_lock is not None:
+            with params_lock:
+                line_offset = shared_params["scanner_lag_samples"]
+                if line_idx % 2 == 0:
+                    line_offset += shared_params["scanner_lag_samples_even"]
+                else:
+                    line_offset += shared_params["scanner_lag_samples_odd"]
+        else:
+            line_offset = scan_layout["scanner_lag_samples"]
+            if line_idx % 2 == 0:
+                line_offset += scan_layout["scanner_lag_samples_even"]
+            else:
+                line_offset += scan_layout["scanner_lag_samples_odd"]
+
+        # Buffer enough: normal allocation + any positive offset that spills past flyback
+        needed = max(samples_per_read, max(0, line_offset) + line_samples)
+        while len(fifo) < needed:
             fifo.extend(ai_task.read(READ_CHUNK, timeout=5.0))
-        data = consume_from_fifo(fifo,samples_per_read)
-        if samples_per_read<line_samples:
+
+        # Peek extended window if offset spills past this line's block;
+        # always consume exactly samples_per_read to keep stream in sync.
+        if needed > samples_per_read:
+            data = np.asarray(list(fifo)[:needed], dtype=np.float32)
+            consume_from_fifo(fifo, samples_per_read)
+        else:
+            data = consume_from_fifo(fifo, samples_per_read)
+
+        # Save raw line data before lag correction (for offline recalibration)
+        if raw_line_buf is not None:
+            save_len = min(len(data), max_line_samples)
+            raw_line_buf[line_idx, :save_len] = data[:save_len]
+            if save_len < max_line_samples:
+                raw_line_buf[line_idx, save_len:] = 0.0
+
+        if samples_per_read < line_samples:
             raise RuntimeError(f"Read slice out of range: {samples_per_read} vs {line_samples}")
         if blocking * nx > line_samples:
             raise RuntimeError("Blocking exceeds available samples")
-        data = np.asarray(data, dtype=np.float32)
-        # 1) extract the relevant data with timing compensation
-        # Calculate total offset for this specific line
-        line_offset = scan_layout["scanner_lag_samples"]
-        if line_idx % 2 == 0:  # even line
-            line_offset += scan_layout["scanner_lag_samples_even"]
-        else:  # odd line
-            line_offset += scan_layout["scanner_lag_samples_odd"]
 
-        # Clamp offset to valid range
-        line_offset = max(0, line_offset)
-
-        # Extract line data starting from offset
-        if line_offset > 0:
-            # Skip initial samples that correspond to scanner lag
-            # Need to read line_offset more samples to compensate for skipped ones
-            line_end = min(line_samples + line_offset, samples_per_read)
-            line = data[line_offset:line_end]
-
-            # If extraction resulted in too few samples, pad with NaN
+        # Extract line with timing compensation (positive or negative offset)
+        if line_offset >= 0:
+            line = data[line_offset:line_offset + line_samples]
             if len(line) < line_samples:
                 padded = np.full(line_samples, np.nan, dtype=np.float32)
                 padded[:len(line)] = line
                 line = padded
         else:
-            # No offset, use original logic
-            line = data[:line_samples]
+            # Negative offset: samples before stream start are unrecoverable; pad with NaN.
+            skip = -line_offset
+            line = np.full(line_samples, np.nan, dtype=np.float32)
+            valid_len = min(line_samples - skip, len(data))
+            if valid_len > 0:
+                line[skip:skip + valid_len] = data[:valid_len]
 
         # This is irrelevant in most cases (just for safety)
         if len(line) < max_line_samples:
@@ -569,17 +642,34 @@ def detector_thread(ai_task,scan_layout,stop_event,image_queue, pattern_specs=sp
             padded[:len(line)] = line
             line = padded
 
-        line = np.nanmean(
-            line[:required_samples].reshape(nx, blocking),
-            axis=1
-        )
+        reshaped = line[:required_samples].reshape(nx, blocking)
+        counts = np.sum(~np.isnan(reshaped), axis=1)
+        line = np.where(counts > 0, np.nansum(reshaped, axis=1) / np.maximum(counts, 1), 0.0)
         frame[line_idx,:] = line
         line_idx += 1
         if line_idx >= ny:
             try:
+                if shared_params is not None and params_lock is not None:
+                    with params_lock:
+                        xy_scale = shared_params["xy_scale"]
+                    if abs(xy_scale - 1.0) > 1e-6:
+                        from scipy.ndimage import zoom as nd_zoom
+                        frame_to_send = nd_zoom(frame, [1.0, xy_scale], order=1)
+                        target_w = pattern_specs["pixels_x"]
+                        if frame_to_send.shape[1] > target_w:
+                            frame_to_send = frame_to_send[:, :target_w]
+                        elif frame_to_send.shape[1] < target_w:
+                            frame_to_send = np.pad(frame_to_send,
+                                                   ((0, 0), (0, target_w - frame_to_send.shape[1])))
+                    else:
+                        frame_to_send = frame.copy()
+                else:
+                    frame_to_send = frame.copy()
                 if image_queue.full():
                     image_queue.get_nowait()
-                image_queue.put_nowait(frame.copy())
+                image_queue.put_nowait(frame_to_send)
+                if raw_frame_holder is not None and raw_line_buf is not None:
+                    raw_frame_holder[0] = raw_line_buf.copy()
             except queue.Full:
                 print("AI thread: full image queue.")
                 pass
@@ -608,15 +698,21 @@ class Display:
         )
         self.plt.title("Live Confocal Image")
         self.plt.colorbar(self.img, ax=self.ax)
+        # Clear all default matplotlib key bindings so our calibration keys don't conflict
+        for k in list(self.plt.rcParams.keys()):
+            if k.startswith('keymap.'):
+                self.plt.rcParams[k] = []
 
 
 
-    def display_loop(self,stop_event,image_queue):
+    def display_loop(self, stop_event, image_queue, current_frame_holder=None):
         frames = 0
         t0 = time.time()
         while not stop_event.is_set():
             try:
                 frame = image_queue.get(timeout=0.5)
+                if current_frame_holder is not None:
+                    current_frame_holder[0] = frame
                 self.img.set_data(frame)
                 self.img.set_clim(frame.min(), frame.max())
                 self.fig.canvas.draw_idle()
@@ -631,6 +727,105 @@ class Display:
                     print(f"[Display] FPS ~ {float(frames)/elapsed}")
             except queue.Empty:
                 self.plt.pause(0.001)
+
+    def setup_key_handler(self, stop_event, shared_params, params_lock,
+                          current_frame_holder, scan_layout, pattern_specs,
+                          raw_frame_holder=None):
+        rate = scan_layout["rate"]
+
+        def on_key_press(event):
+            key = event.key
+            if key is None:
+                return
+            with params_lock:
+                if key == 'q':
+                    shared_params["scanner_lag_samples"] += 1
+                elif key == 'a':
+                    shared_params["scanner_lag_samples"] -= 1
+                elif key == 'w':
+                    shared_params["scanner_lag_samples"] += 5
+                elif key == 's':
+                    shared_params["scanner_lag_samples"] -= 5
+                elif key == 'e':
+                    shared_params["scanner_lag_samples_even"] += 1
+                elif key == 'd':
+                    shared_params["scanner_lag_samples_even"] -= 1
+                elif key == 'r':
+                    shared_params["scanner_lag_samples_even"] += 5
+                elif key == 'f':
+                    shared_params["scanner_lag_samples_even"] -= 5
+                elif key == 't':
+                    shared_params["scanner_lag_samples_odd"] += 1
+                elif key == 'g':
+                    shared_params["scanner_lag_samples_odd"] -= 1
+                elif key == 'y':
+                    shared_params["scanner_lag_samples_odd"] += 5
+                elif key == 'h':
+                    shared_params["scanner_lag_samples_odd"] -= 5
+                elif key == 'u':
+                    shared_params["xy_scale"] = round(shared_params["xy_scale"] + 0.01, 4)
+                elif key == 'j':
+                    shared_params["xy_scale"] = round(shared_params["xy_scale"] - 0.01, 4)
+                elif key in ('p', 'S', 'A', 'x', 'escape'):
+                    p_snap = dict(shared_params)
+                else:
+                    return
+
+            if key == 'p':
+                lag = p_snap["scanner_lag_samples"]
+                even = p_snap["scanner_lag_samples_even"]
+                odd = p_snap["scanner_lag_samples_odd"]
+                scale = p_snap["xy_scale"]
+                khz = rate / 1000
+                print("\n--- Current calibration parameters ---")
+                print(f"scanner_lag_samples:      {lag:4d}   ({lag/rate*1e6:.1f} µs @ {khz:.0f} kHz)")
+                print(f"scanner_lag_samples_even: {even:4d}   ({even/rate*1e6:.1f} µs)")
+                print(f"scanner_lag_samples_odd:  {odd:4d}   ({odd/rate*1e6:.1f} µs)")
+                print(f"xy_scale:             {scale:.4f}")
+                print("\n# Paste into specs_bidirectional:")
+                print(f'"scanner_lag_samples": {lag},')
+                print(f'"scanner_lag_samples_even": {even},')
+                print(f'"scanner_lag_samples_odd": {odd},')
+                print(f'"xy_scale": {scale},')
+                print()
+            elif key == 'A':
+                frame = current_frame_holder[0]
+                if frame is None:
+                    print("[Auto] No frame available yet.")
+                else:
+                    from lag_calibration import estimate_even_odd_shift
+                    spx = scan_layout["max_line_samples"] / pattern_specs["pixels_x"]
+                    shift_px = estimate_even_odd_shift(frame)
+                    delta = round(shift_px * spx)
+                    with params_lock:
+                        shared_params["scanner_lag_samples_odd"] += delta
+                    print(f"[Auto] even/odd shift: {shift_px:+.2f} px → odd lag adjusted by {delta:+d} samples")
+            elif key == 'S':
+                frame = current_frame_holder[0]
+                if frame is None:
+                    print("No frame available yet, cannot save.")
+                else:
+                    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    np.savez(
+                        f"calibration_{timestamp}.npz",
+                        frame=frame,
+                        raw_lines=raw_frame_holder[0] if raw_frame_holder is not None else None,
+                        scanner_lag_samples=p_snap["scanner_lag_samples"],
+                        scanner_lag_samples_even=p_snap["scanner_lag_samples_even"],
+                        scanner_lag_samples_odd=p_snap["scanner_lag_samples_odd"],
+                        xy_scale=p_snap["xy_scale"],
+                        rate=rate,
+                        pixels_x=pattern_specs["pixels_x"],
+                        pixels_y=pattern_specs["pixels_y"],
+                        samples_per_pixel=scan_layout["max_line_samples"] / pattern_specs["pixels_x"],
+                        bidirectional=pattern_specs.get("bidirectional", True),
+                    )
+                    print(f"Saved calibration_{timestamp}.npz")
+            elif key in ('x', 'escape'):
+                print("Exiting...")
+                stop_event.set()
+
+        self.fig.canvas.mpl_connect('key_press_event', on_key_press)
 
     def close(self):
         self.plt.ioff()
@@ -655,48 +850,180 @@ def show_image(img_data):
 
 
 # ----------------------------
+# Keyboard input thread
+# ----------------------------
+def keyboard_thread_func(stop_event, shared_params, params_lock,
+                         current_frame_holder, scan_layout, pattern_specs,
+                         raw_frame_holder=None):
+    old_settings = termios.tcgetattr(sys.stdin)
+    try:
+        tty.setcbreak(sys.stdin.fileno())
+        rate = scan_layout["rate"]
+        while not stop_event.is_set():
+            ready = select.select([sys.stdin], [], [], 0.05)[0]
+            if not ready:
+                continue
+            key = sys.stdin.read(1)
+            with params_lock:
+                if key == 'q':
+                    shared_params["scanner_lag_samples"] += 1
+                elif key == 'a':
+                    shared_params["scanner_lag_samples"] -= 1
+                elif key == 'w':
+                    shared_params["scanner_lag_samples"] += 5
+                elif key == 's':
+                    shared_params["scanner_lag_samples"] -= 5
+                elif key == 'e':
+                    shared_params["scanner_lag_samples_even"] += 1
+                elif key == 'd':
+                    shared_params["scanner_lag_samples_even"] -= 1
+                elif key == 'r':
+                    shared_params["scanner_lag_samples_even"] += 5
+                elif key == 'f':
+                    shared_params["scanner_lag_samples_even"] -= 5
+                elif key == 't':
+                    shared_params["scanner_lag_samples_odd"] += 1
+                elif key == 'g':
+                    shared_params["scanner_lag_samples_odd"] -= 1
+                elif key == 'y':
+                    shared_params["scanner_lag_samples_odd"] += 5
+                elif key == 'h':
+                    shared_params["scanner_lag_samples_odd"] -= 5
+                elif key == 'u':
+                    shared_params["xy_scale"] = round(shared_params["xy_scale"] + 0.01, 4)
+                elif key == 'j':
+                    shared_params["xy_scale"] = round(shared_params["xy_scale"] - 0.01, 4)
+                elif key in ('p', 'S', 'A', 'x'):
+                    p_snap = dict(shared_params)
+                else:
+                    continue
+
+            if key == 'p':
+                lag = p_snap["scanner_lag_samples"]
+                even = p_snap["scanner_lag_samples_even"]
+                odd = p_snap["scanner_lag_samples_odd"]
+                scale = p_snap["xy_scale"]
+                khz = rate / 1000
+                print("\n--- Current calibration parameters ---")
+                print(f"scanner_lag_samples:      {lag:4d}   ({lag/rate*1e6:.1f} µs @ {khz:.0f} kHz)")
+                print(f"scanner_lag_samples_even: {even:4d}   ({even/rate*1e6:.1f} µs)")
+                print(f"scanner_lag_samples_odd:  {odd:4d}   ({odd/rate*1e6:.1f} µs)")
+                print(f"xy_scale:             {scale:.4f}")
+                print("\n# Paste into specs_bidirectional:")
+                print(f'"scanner_lag_samples": {lag},')
+                print(f'"scanner_lag_samples_even": {even},')
+                print(f'"scanner_lag_samples_odd": {odd},')
+                print(f'"xy_scale": {scale},')
+                print()
+            elif key == 'A':
+                frame = current_frame_holder[0]
+                if frame is None:
+                    print("[Auto] No frame available yet.")
+                else:
+                    from lag_calibration import estimate_even_odd_shift
+                    spx = scan_layout["max_line_samples"] / pattern_specs["pixels_x"]
+                    shift_px = estimate_even_odd_shift(frame)
+                    delta = round(shift_px * spx)
+                    with params_lock:
+                        shared_params["scanner_lag_samples_odd"] += delta
+                    print(f"[Auto] even/odd shift: {shift_px:+.2f} px → odd lag adjusted by {delta:+d} samples")
+            elif key == 'S':
+                frame = current_frame_holder[0]
+                if frame is None:
+                    print("No frame available yet, cannot save.")
+                else:
+                    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    np.savez(
+                        f"calibration_{timestamp}.npz",
+                        frame=frame,
+                        raw_lines=raw_frame_holder[0] if raw_frame_holder is not None else None,
+                        scanner_lag_samples=p_snap["scanner_lag_samples"],
+                        scanner_lag_samples_even=p_snap["scanner_lag_samples_even"],
+                        scanner_lag_samples_odd=p_snap["scanner_lag_samples_odd"],
+                        xy_scale=p_snap["xy_scale"],
+                        rate=rate,
+                        pixels_x=pattern_specs["pixels_x"],
+                        pixels_y=pattern_specs["pixels_y"],
+                        samples_per_pixel=scan_layout["max_line_samples"] / pattern_specs["pixels_x"],
+                        bidirectional=pattern_specs.get("bidirectional", True),
+                    )
+                    print(f"Saved calibration_{timestamp}.npz")
+            elif key == 'x':
+                print("Exiting...")
+                stop_event.set()
+    finally:
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+
+
+# ----------------------------
 # Main
 # ----------------------------
-def run():
+def run(pattern_specs=specs_bidirectional, image_type='resolution_target',
+        hardware='fake', randomize_lag=False, lag_range=10):
     ai_vmin, ai_vmax = 0.0, 10.0  # DET36A/M output range into high-Z
-    ao_data, do_data, scan_layout = setup_and_check_pattern(specs_unidirectional)
-    rate=int(specs_unidirectional["rate"])
+    ao_data, do_data, scan_layout = setup_and_check_pattern(pattern_specs)
+    rate = int(pattern_specs["rate"])
     total_scan_samples = ao_data.shape[0]
-    if total_scan_samples!= do_data.shape[0]:
+    if total_scan_samples != do_data.shape[0]:
         raise RuntimeError("No match of scan and trigger samples!")
     # make the reading channel larger than needed for safety
-    samps_per_read_chan=10*4096   #2*scan_layout["max_line_read_samples"]
+    samps_per_read_chan = 10 * 4096
     stop_event = threading.Event()
     image_queue = queue.Queue(maxsize=3)
-    display=Display()
-    display.initialize_display(specs_bidirectional)
-    tasksfactory=FakeNIDaqTaskFactory()
+    current_frame_holder = [None]
+
+    shared_params = {
+        "scanner_lag_samples":      pattern_specs.get("scanner_lag_samples", 0),
+        "scanner_lag_samples_even": pattern_specs.get("scanner_lag_samples_even", 0),
+        "scanner_lag_samples_odd":  pattern_specs.get("scanner_lag_samples_odd", 0),
+        "xy_scale": 1.0,
+    }
+    params_lock = threading.Lock()
+    raw_frame_holder = [None]
+
+    display = Display()
+    display.initialize_display(pattern_specs)
+    if hardware == 'real':
+        tasksfactory = NIDaqTaskFactory()
+    else:
+        tasksfactory = FakeNIDaqTaskFactory(image_type=image_type,
+                                            randomize_lag=randomize_lag,
+                                            lag_range=lag_range)
     tasksfactory.set_rate(rate)
-    ao_task=tasksfactory.create_ao_wrapper(total_scan_samples)
-    do_task=tasksfactory.create_do_wrapper(total_scan_samples)
-    ai_task=tasksfactory.create_ai_wrapper(ai_vmin,ai_vmax,samps_per_read_chan)
+    ao_task = tasksfactory.create_ao_wrapper(total_scan_samples)
+    do_task = tasksfactory.create_do_wrapper(total_scan_samples)
+    ai_task = tasksfactory.create_ai_wrapper(ai_vmin, ai_vmax, samps_per_read_chan)
     ai_task.initialize(scan_layout)
-    # auto_start=False by default
     ao_task.write(ao_data)
     do_task.write(do_data)
-#    print(ai_task.read(2000,1))
-#    print(ai_task.read(2000,1))
- #   show_image(ai_task.frame_image)
-#    exit()
+
     t_ai = threading.Thread(
         target=detector_thread,
-        args=(ai_task,scan_layout,stop_event,image_queue, specs_bidirectional),
+        args=(ai_task, scan_layout, stop_event, image_queue, pattern_specs),
+        kwargs={"shared_params": shared_params, "params_lock": params_lock,
+                "raw_frame_holder": raw_frame_holder},
         daemon=True
     )
+    display.setup_key_handler(stop_event, shared_params, params_lock,
+                              current_frame_holder, scan_layout, pattern_specs,
+                              raw_frame_holder=raw_frame_holder)
+
+    print("\n--- Live calibration controls (focus the image window) ---")
+    print("  Global lag:   q/a (±1)   w/s (±5)")
+    print("  Even offset:  e/d (±1)   r/f (±5)")
+    print("  Odd offset:   t/g (±1)   y/h (±5)")
+    print("  XY scale:     u/j (±0.01)")
+    print("  A: auto even/odd calibrate   p: print params   S: save .npz   x / Esc: exit")
+    print("----------------------------------------------------------\n")
+
     try:
-        # arm the tasks:
         ai_task.start()
         do_task.start()
-        # This has to be last since it starts the sample clock and hence also the other tasks.
+        # AO must start last — it generates the sample clock for all other tasks.
         ao_task.start()
         time.sleep(0.05)
         t_ai.start()
-        display.display_loop(stop_event,image_queue)
+        display.display_loop(stop_event, image_queue, current_frame_holder)
     finally:
         stop_event.set()
         t_ai.join()
@@ -705,6 +1032,14 @@ def run():
         ao_task.stop()
         display.close()
         print("All threads stopped.")
+        if hasattr(ai_task, 'reveal_true_lag'):
+            true_lag = ai_task.reveal_true_lag()
+            if true_lag is not None:
+                rate_hz = scan_layout["rate"]
+                print("\n--- Ground truth (simulated lag) ---")
+                print(f'scanner_lag_samples:      {true_lag["scanner_lag_samples"]:4d}   ({true_lag["scanner_lag_samples"]/rate_hz*1e6:.1f} µs)')
+                print(f'scanner_lag_samples_even: {true_lag["scanner_lag_samples_even"]:4d}   ({true_lag["scanner_lag_samples_even"]/rate_hz*1e6:.1f} µs)')
+                print(f'scanner_lag_samples_odd:  {true_lag["scanner_lag_samples_odd"]:4d}   ({true_lag["scanner_lag_samples_odd"]/rate_hz*1e6:.1f} µs)')
 
 def test():
     ao_data, do_data, scan_layout = setup_and_check_pattern(specs_bidirectional)
@@ -717,6 +1052,25 @@ def test():
     print(len(scan_layout["line_samples"]))
 
 if __name__ == "__main__":
-    #test()
-    run()
+    import argparse
+    parser = argparse.ArgumentParser(description="NIDAQ galvo scan — live calibration tool")
+    parser.add_argument('--real', action='store_true',
+                        help='Use real NIDAQ hardware (default: fake/simulated)')
+    parser.add_argument('--image', choices=['resolution_target', 'grid'],
+                        default='grid',
+                        help='Simulated image type (default: grid)')
+    parser.add_argument('--random-lag', action='store_true',
+                        help='Randomise simulated lag for calibration testing')
+    parser.add_argument('--lag-range', type=int, default=10,
+                        help='Half-range for random lag in samples (default: 10)')
+    parser.add_argument('--unidirectional', action='store_true',
+                        help='Use unidirectional scan pattern (default: bidirectional)')
+    args = parser.parse_args()
+
+    pattern = specs_unidirectional if args.unidirectional else specs_bidirectional
+    run(pattern_specs=pattern,
+        image_type=args.image,
+        hardware='real' if args.real else 'fake',
+        randomize_lag=args.random_lag,
+        lag_range=args.lag_range)
 

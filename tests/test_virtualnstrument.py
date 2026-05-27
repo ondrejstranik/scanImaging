@@ -32,6 +32,7 @@ def test_VirtualScanner_2():
     scanner.disconnect()
 
 
+@pytest.mark.GUI
 def test_VirtualScanner():
     ''' check if the data are obtained'''
     #import scanImaging

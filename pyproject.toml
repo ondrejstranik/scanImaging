@@ -21,6 +21,9 @@ classifiers = [
 ]
 
 
+[tool.setuptools.packages.find]
+include = ["scanImaging*"]
+
 [project.optional-dependencies]
 bmc = ["bmc @ file:///${PROJECT_ROOT}/external_libs/bmc"]
 
