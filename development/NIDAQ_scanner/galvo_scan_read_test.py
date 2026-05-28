@@ -6,10 +6,15 @@ import time
 import threading
 import queue
 import sys
-import select
-import termios
-import tty
+import select  # available on all platforms; stdin use inside keyboard_thread_func is Unix-only
 import datetime
+
+try:
+    import termios
+    import tty
+    _HAS_TERMIOS = True
+except ImportError:
+    _HAS_TERMIOS = False  # Windows — keyboard_thread_func unavailable, run() uses matplotlib events
 import numpy as np
 from collections import deque
 from safe_scan_pattern import print_pattern_metrics, safe_scan_pattern, stop_outputs,check_if_exceeds_limits
@@ -855,6 +860,11 @@ def show_image(img_data):
 def keyboard_thread_func(stop_event, shared_params, params_lock,
                          current_frame_holder, scan_layout, pattern_specs,
                          raw_frame_holder=None):
+    if not _HAS_TERMIOS:
+        raise RuntimeError(
+            "keyboard_thread_func requires termios (Unix only). "
+            "Use Display.setup_key_handler() for cross-platform keyboard input."
+        )
     old_settings = termios.tcgetattr(sys.stdin)
     try:
         tty.setcbreak(sys.stdin.fileno())
