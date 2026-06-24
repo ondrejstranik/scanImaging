@@ -58,7 +58,29 @@ class FlimData:
         if processed:
             return np.sum(self.processedData,axis=(-1,-2))
         else:
-            return np.sum(self.dataCube,axis=(-1,-2))        
+            return np.sum(self.dataCube,axis=(-1,-2))
+
+    def roughLifetimeFit(self, peak_offset_ns=0.3, fit_window_ns=None,
+                         fit_background=True):
+        ''' rough single-exponential lifetime check on the whole-image histogram.
+
+        Sums the data over all pixels (and channels) and fits a single exponential
+        past the IRF peak. Sanity check only - see algorithm.flimFit and project notes
+        for the pixel-resolved Julia handoff.
+
+        Returns the dict from flimFit.rough_single_exp_fit.
+        '''
+        from scanImaging.algorithm.flimFit import rough_single_exp_fit
+        time_axis = self.getTimeAxis()
+        histogram = self.getTimeHistogram(processed=True)
+        # collapse any residual channel axis so a 1D histogram is fit
+        histogram = np.asarray(histogram, dtype=float)
+        while histogram.ndim > 1:
+            histogram = histogram.sum(axis=-1)
+        return rough_single_exp_fit(time_axis, histogram,
+                                    peak_offset_ns=peak_offset_ns,
+                                    fit_window_ns=fit_window_ns,
+                                    fit_background=fit_background)
 
 
 

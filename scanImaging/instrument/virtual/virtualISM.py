@@ -95,6 +95,18 @@ class VirtualISM:
         self.imagedict={"image1":imagepath1,"image2":imagepath2,"image3":imagepath3}
         self.currentimage="empty"
 
+        # --- FLIM lifetime simulation ---
+        # The sample is split into a foreground region (structure, intensity above
+        # regionThreshold*max) and a background region, each with its own
+        # bi-exponential lifetime. A Gaussian IRF is applied globally.
+        self.flim = {
+            'enabled': False,
+            'regionThreshold': 0.5,   # fraction of max intensity separating fg/bg
+            'fg_tau1': 2.8, 'fg_tau2': 0.6, 'fg_frac': 0.7,  # foreground [ns], frac of comp1
+            'bg_tau1': 1.2, 'bg_tau2': 0.3, 'bg_frac': 0.5,  # background [ns]
+            'irf_sigma': 0.15, 'irf_offset': 0.0,            # Gaussian IRF [ns]
+        }
+
     def makeIsmOffsetGrid(self, channelgridx, channelgridy, pixelshift=10):
         ''' create an ISM detector offset grid '''
         offsetgrid = np.array([[i*pixelshift,j*pixelshift] for i in range(channelgridx) for j in range(channelgridy)])
@@ -114,6 +126,36 @@ class VirtualISM:
         val=param.get("read_noise",-1)
         if val>=0:
             self.gaussBackground=val
+
+    def setFlimParameter(self, param):
+        ''' update FLIM lifetime parameters from a dict and push to the scanner '''
+        for key in self.flim:
+            if key in param:
+                self.flim[key] = param[key]
+        self._applyFlimToScanner()
+
+    def _applyFlimToScanner(self):
+        ''' build per-pixel lifetime maps from the current sample structure and the
+        region parameters, and push them (or a disable) to the virtual scanner '''
+        if self.virtualScanner is None:
+            return
+        if not self.flim['enabled']:
+            self.virtualScanner.disableFlim()
+            return
+
+        # foreground = sample structure (intensity above threshold), background = rest
+        base = np.asarray(self.base_image, dtype=float)
+        if base.ndim != 2:
+            base = base.reshape(self.virtualScanner.imageSize)
+        peak = base.max() if base.max() > 0 else 1.0
+        fg = base >= (self.flim['regionThreshold'] * peak)
+
+        tau1 = np.where(fg, self.flim['fg_tau1'], self.flim['bg_tau1'])
+        tau2 = np.where(fg, self.flim['fg_tau2'], self.flim['bg_tau2'])
+        frac = np.where(fg, self.flim['fg_frac'], self.flim['bg_frac'])
+
+        self.virtualScanner.setLifetimeMap(tau1, tau2, frac)
+        self.virtualScanner.setIRF(self.flim['irf_sigma'], self.flim['irf_offset'])
 
     def setImage(self,image:str):
         imagepath=self.imagedict.get(image,None)
@@ -277,6 +319,8 @@ class VirtualISM:
         # set the ism image to the virtual scanner
         add_microscopy_noise(final_image,0,self.gaussBackground,self.backGroundLevel)
         self.virtualScanner.setVirtualProbe(final_image)
+        # refresh FLIM lifetime maps so they track the current sample structure
+        self._applyFlimToScanner()
         print(f"ISM image updated in {time.perf_counter()-start_time:.2f} seconds.")
 
     def disconnect(self):
@@ -316,6 +360,7 @@ class VirtualISM:
             'gaussBackground': self.gaussBackground,
             'photons_per_pixel': self.maxPhotonPerPixel,
             'currentimage': self.currentimage,
+            'flim': self.flim.copy(),
             'timestamp': datetime.now().isoformat(),
             'name': self.name
         }
@@ -357,6 +402,12 @@ class VirtualISM:
             self.maxPhotonPerPixel = int(data['photons_per_pixel'])
             if self.virtualScanner is not None:
                 self.virtualScanner.setMaxPhotonPerPixel(self.maxPhotonPerPixel)
+
+        # Restore FLIM lifetime settings
+        if 'flim' in data:
+            flim = data['flim'].item() if hasattr(data['flim'], 'item') else data['flim']
+            if isinstance(flim, dict):
+                self.flim.update(flim)
         # Restore current image
         if 'currentimage' in data:
             current_img = str(data['currentimage'])

@@ -230,6 +230,54 @@ class VirtualISMGui(BaseGUI):
         # Store reference
         self.deep_tissue_widget = deep_tissue_widget
 
+        # -------------------------
+        # FLIM (LIFETIME) TAB
+        # -------------------------
+        @magicgui(call_button='Apply FLIM Parameters', layout='vertical')
+        def flim_widget(
+            enable_flim: bool = False,
+            region_threshold: float = 0.5,
+            fg_tau1_ns: float = 2.8,
+            fg_tau2_ns: float = 0.6,
+            fg_amp_fraction: float = 0.7,
+            bg_tau1_ns: float = 1.2,
+            bg_tau2_ns: float = 0.3,
+            bg_amp_fraction: float = 0.5,
+            irf_sigma_ns: float = 0.15,
+            irf_offset_ns: float = 0.0,
+        ):
+            """
+            Simulate fluorescence lifetime data for the virtual sample.
+
+            The sample is split into a foreground region (structure, intensity above
+            region_threshold x max) and a background region. Each region emits photons
+            with a bi-exponential decay (two lifetimes + amplitude fraction of the first
+            component), convolved with a Gaussian instrument response (IRF).
+
+            Photon microtimes are produced in the B&H reverse start-stop convention;
+            the scanner processor inverts them so the lifetime histogram runs forward.
+            """
+            if self.device is None:
+                print("No VirtualISM device set")
+                return
+            params = {
+                'enabled': bool(enable_flim),
+                'regionThreshold': float(region_threshold),
+                'fg_tau1': float(fg_tau1_ns), 'fg_tau2': float(fg_tau2_ns),
+                'fg_frac': float(fg_amp_fraction),
+                'bg_tau1': float(bg_tau1_ns), 'bg_tau2': float(bg_tau2_ns),
+                'bg_frac': float(bg_amp_fraction),
+                'irf_sigma': float(irf_sigma_ns), 'irf_offset': float(irf_offset_ns),
+            }
+            try:
+                self.device.setFlimParameter(params)
+                self.device.updateImage()
+                print(f"FLIM parameters applied (enabled={enable_flim})")
+            except Exception as e:
+                print(f"Error applying FLIM parameters: {e}")
+
+        self.flim_widget = flim_widget
+
         # State Save/Load tab
         tab3 = QWidget()
         layout3 = QVBoxLayout()
@@ -342,10 +390,17 @@ class VirtualISMGui(BaseGUI):
         layout4.addWidget(self.deep_tissue_widget.native)
         tab4.setLayout(layout4)
 
+        # FLIM tab
+        tab5 = QWidget()
+        layout5 = QVBoxLayout()
+        layout5.addWidget(self.flim_widget.native)
+        tab5.setLayout(layout5)
+
         tab_widget.addTab(tab1, "ISM Parameters")
         tab_widget.addTab(tab2, "Probe Parameters")
         tab_widget.addTab(tab3, "State Save/Load")
         tab_widget.addTab(tab4, "Deep Tissue")
+        tab_widget.addTab(tab5, "FLIM")
 
         self.dw = self.vWindow.addParameterGui(tab_widget, name=self.DEFAULT['nameGUI'])
 

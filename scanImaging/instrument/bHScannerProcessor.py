@@ -237,7 +237,12 @@ class BHScannerProcessor(BaseProcessor):
         self.channel = stack[:,3].astype('int')
 
         # get microTime and reduce resolution
-        self.microTime = (stack[:,4] * self.microTimeBin / self.scanner.timeSize).astype('int')
+        # B&H reverse start-stop: the raw microtime is timed relative to the NEXT laser
+        # pulse, so the physical photon delay after excitation is (timeSize - microtime).
+        # Invert before binning so the lifetime histogram runs forward in time.
+        photonDelay = self.scanner.timeSize - stack[:,4].astype('int64')
+        self.microTime = (photonDelay * self.microTimeBin // self.scanner.timeSize).astype('int')
+        np.clip(self.microTime, 0, self.microTimeBin - 1, out=self.microTime)
 
         # info for debugging
         if np.any(returnSignal):

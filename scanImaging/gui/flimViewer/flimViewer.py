@@ -11,6 +11,7 @@ from viscope.gui.napariViewer.napariViewer import NapariViewer
 
 import numpy as np
 from scanImaging.algorithm.flimData import FlimData
+from scanImaging.algorithm.flimFit import rough_single_exp_fit
 import traceback
 
 
@@ -45,6 +46,10 @@ class FlimViewer(QWidget):
             self.dockWidgetData = None 
 
         self.flimGraph = None
+
+        # rough single-exponential fit overlaid on the time histogram
+        self.fitEnabled = kwargs.get('fitEnabled', True)
+        self.fitPeakOffsetNs = kwargs.get('fitPeakOffsetNs', 0.3)
 
         # set this qui of this class
         FlimViewer._setWidget(self)
@@ -88,24 +93,47 @@ class FlimViewer(QWidget):
         self.viewer.layers.selection.events.changed.connect(self.drawTimeGraph)
 
     def drawTimeGraph(self):
-        ''' draw time lines in the spectraGraph '''
+        ''' draw time histogram (+ rough single-exp fit) in the time graph '''
         # remove all lines
         self.timeGraph.clear()
 
         try:
-            #mypen = QPen()
-            #mypen.setWidth(0)
-            #lineplot = self.timeGraph.plot(pen= mypen)
-            lineplot = self.timeGraph.plot()
-
+            timeAxis = self.flimData.getTimeAxis()
             if self.viewer.layers.selection.active == self.processedImageLayer:
-                lineplot.setData(self.flimData.getTimeAxis(),
-                                self.flimData.getTimeHistogram(processed=True))
+                histogram = self.flimData.getTimeHistogram(processed=True)
             else:
-                lineplot.setData(self.flimData.getTimeAxis(),
-                                self.flimData.getTimeHistogram()[:,int(self.viewer.dims.point[0])])             
+                histogram = self.flimData.getTimeHistogram()[:, int(self.viewer.dims.point[0])]
+            histogram = np.asarray(histogram, dtype=float)
+
+            lineplot = self.timeGraph.plot()
+            lineplot.setData(timeAxis, histogram)
+
+            # overlay a rough single-exponential fit (sanity check on tau range)
+            self._drawRoughFit(timeAxis, histogram)
         except:
             print('error occurred in FlimViewer - drawTimeGraph')
+            traceback.print_exc()
+
+    def _drawRoughFit(self, timeAxis, histogram):
+        ''' fit a single exponential to the displayed histogram and overlay it,
+        showing the estimated lifetime in the plot title. Failures are silent
+        (e.g. empty/initial data) so the viewer keeps working. '''
+        if not self.fitEnabled:
+            self.timeGraph.setTitle('time Histogram')
+            return
+        try:
+            fit = rough_single_exp_fit(timeAxis, histogram,
+                                       peak_offset_ns=self.fitPeakOffsetNs)
+            if fit['success']:
+                fitline = self.timeGraph.plot(pen=pg.mkPen('r', width=2))
+                fitline.setData(fit['t_fit'], fit['y_fit'])
+                self.timeGraph.setTitle(
+                    f"time Histogram   (rough τ = {fit['tau_ns']:.2f} ns, "
+                    f"fit from {fit['t_start_ns']:.2f} ns)")
+            else:
+                self.timeGraph.setTitle('time Histogram   (no fit)')
+        except Exception:
+            self.timeGraph.setTitle('time Histogram')
             traceback.print_exc()
 
     def updateImage(self):
