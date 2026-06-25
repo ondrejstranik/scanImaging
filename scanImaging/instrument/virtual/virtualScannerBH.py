@@ -90,11 +90,95 @@ class VirtualBHScanner(BaseADetector):
         self.virtualProbeExtra = np.zeros(self.scanSize)
         self.virtualProbeExtra[0:self.imageSize[0],0:self.imageSize[1]]= self.virtualProbe
 
-        # double the virtual probe. it overcome the indexing issue with scan rolling over 
+        # double the virtual probe. it overcome the indexing issue with scan rolling over
         self.virtualProbeExtra = np.vstack((self.virtualProbeExtra,self.virtualProbeExtra))
 
         # linearize the probe
         self.virtualProbeExtra = self.virtualProbeExtra.reshape(-1)
+
+        # --- FLIM lifetime simulation ---
+        # When flimEnabled, photon microtimes are drawn from a per-pixel bi-exponential
+        # decay (+ Gaussian IRF) instead of a uniform random value. Maps are linearized
+        # the same way as the probe so they can be indexed by the scan pixel index.
+        # Emitted microtimes follow the B&H reverse start-stop convention
+        # (raw microtime = timeSize - photon_delay_in_bins).
+        self.flimEnabled = False
+        self.tau1Extra = None   # linearized fast/long component lifetime map [ns]
+        self.tau2Extra = None   # linearized second component lifetime map [ns]
+        self.fracExtra = None   # linearized amplitude fraction of component 1 (0..1)
+        self.irfSigma = 0.0     # Gaussian IRF width [ns]
+        self.irfOffset = 0.0    # Gaussian IRF centre offset [ns]
+
+    def _linearize2D(self, map2d):
+        ''' linearize a 2D (imageSize) map into the doubled/extended scan layout,
+        matching the transform used for the virtual probe so it can be indexed by
+        the scan pixel index '''
+        arr = np.zeros(self.scanSize)
+        arr[0:self.imageSize[0], 0:self.imageSize[1]] = map2d
+        arr = np.vstack((arr, arr))
+        return arr.reshape(-1)
+
+    def setLifetimeMap(self, tau1Map, tau2Map, fracMap):
+        ''' set per-pixel bi-exponential lifetime maps (each of shape imageSize, in ns).
+        tau1Map, tau2Map ... lifetimes of the two decay components
+        fracMap ... amplitude fraction assigned to component 1 (0..1) '''
+        self.tau1Extra = self._linearize2D(np.asarray(tau1Map, dtype=float))
+        self.tau2Extra = self._linearize2D(np.asarray(tau2Map, dtype=float))
+        self.fracExtra = self._linearize2D(np.asarray(fracMap, dtype=float))
+        self.flimEnabled = True
+
+    def setLifetimeUniform(self, tau1, tau2, frac):
+        ''' convenience: set a spatially uniform bi-exponential lifetime '''
+        ones = np.ones(self.imageSize)
+        self.setLifetimeMap(tau1*ones, tau2*ones, frac*ones)
+
+    def setIRF(self, sigma, offset=0.0):
+        ''' set Gaussian instrument response function (sigma and centre offset, in ns) '''
+        self.irfSigma = float(sigma)
+        self.irfOffset = float(offset)
+
+    def disableFlim(self):
+        ''' revert to uniform random microtimes '''
+        self.flimEnabled = False
+
+    def generatePhotonMicroTimes(self, pixelIdx):
+        ''' generate raw B&H microtimes for photons located at the given scan pixel
+        indices, drawn from the per-pixel bi-exponential decay convolved with a
+        Gaussian IRF. Returns a uint-compatible int array in the reverse start-stop
+        convention (raw = timeSize - delay_in_bins).
+
+        This is the core lifetime model; it is also called directly by the
+        verification harness. '''
+        pixelIdx = np.asarray(pixelIdx, dtype=int)
+        n = pixelIdx.size
+        if n == 0:
+            return np.zeros(0, dtype=int)
+
+        if self.flimEnabled and self.tau1Extra is not None:
+            tau1 = self.tau1Extra[pixelIdx]
+            tau2 = self.tau2Extra[pixelIdx]
+            frac = self.fracExtra[pixelIdx]
+        else:
+            # fall back to a uniform default lifetime if FLIM is on but no map was set
+            tau1 = np.full(n, 2.5)
+            tau2 = np.full(n, 0.6)
+            frac = np.full(n, 0.7)
+
+        # pick component per photon, then sample exponential delay [ns]
+        comp1 = np.random.rand(n) < frac
+        tau = np.where(comp1, tau1, tau2)
+        tau = np.where(tau <= 0, 1e-6, tau)   # guard against zero/negative lifetimes
+        delay_ns = np.random.exponential(tau)
+
+        # Gaussian instrument response
+        if self.irfSigma > 0 or self.irfOffset != 0:
+            delay_ns = delay_ns + np.random.normal(self.irfOffset, self.irfSigma, n)
+
+        # convert delay [ns] -> time bins, then to reverse start-stop raw microtime
+        span = float(self.timeRange[1] - self.timeRange[0])
+        delay_bins = np.round(delay_ns / span * self.timeSize).astype(int)
+        np.clip(delay_bins, 0, self.timeSize - 1, out=delay_bins)
+        return (self.timeSize - 1 - delay_bins).astype(int)
 
     def setMaxPhotonPerPixel(self,val):
         if val<1:
@@ -229,10 +313,15 @@ class VirtualBHScanner(BaseADetector):
             validSignal = ((_virtualPhoton ==1) | tMacroFlag | newLineFlag)
             #print(f'size of stack {np.sum(validSignal*1)}')
 
-            # TODO: generate proper channel and time according the sample
-            # currently only arbitrary
             _numberOfSignal = np.sum(validSignal)
-            _microTime = np.random.randint(0,self.timeSize,_numberOfSignal)
+            # generate microtimes. With FLIM enabled they follow the per-pixel
+            # bi-exponential decay (+ IRF); otherwise a uniform random value.
+            # (Non-photon flag events also get a microtime but are discarded by the
+            #  processor, so sampling them from the pixel's decay is harmless.)
+            if self.flimEnabled:
+                _microTime = self.generatePhotonMicroTimes(pixelIdx[validSignal])
+            else:
+                _microTime = np.random.randint(0,self.timeSize,_numberOfSignal)
             if hasvirtualChannels:
                 _channel = _channel_events[validSignal]
             else:
