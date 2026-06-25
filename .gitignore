@@ -165,3 +165,4 @@ scanImaging/Data/
 virtualISM_state.npz
 development/NIDAQ_scanner/IMPLEMENTATION_NOTES.md
 optimization_metric_plot.png
+.vscode/settings.json
